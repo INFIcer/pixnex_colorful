@@ -1,3 +1,17 @@
-﻿**/__pycache__/
+﻿# Python
+**/__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec.bak
+
+# Kilo Agent (IDE local config, not part of project source)
+.kilo/
+
+# Debug logs
 debug.log
 debug.html

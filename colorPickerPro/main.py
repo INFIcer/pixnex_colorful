@@ -1,3 +1,4 @@
+import os
 import sys
 
 from PySide6.QtWidgets import (
@@ -170,6 +171,8 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    if getattr(sys, 'frozen', False):
+        os.environ['QT_PLUGIN_PATH'] = os.path.join(sys._MEIPASS, 'PySide6', 'plugins')
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     win = MainWindow()

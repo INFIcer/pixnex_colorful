@@ -12,6 +12,7 @@
 import sys
 import time
 import ctypes
+from ctypes import wintypes
 import hashlib
 import numpy as np
 import mss
@@ -95,6 +96,10 @@ class ScreenFilterWindow(CustomFramelessWindow):
         self._frozen_raw = None
         self._raw_hash = None
         self._affinity_set = False
+        self._cap_l = 0
+        self._cap_t = 0
+        self._cap_w = 1
+        self._cap_h = 1
 
         self._debounce_timer = QTimer(self)
         self._debounce_timer.setSingleShot(True)
@@ -138,6 +143,7 @@ class ScreenFilterWindow(CustomFramelessWindow):
     def _toggle_capture(self):
         self._capturing = not self._capturing
         if self._capturing:
+            self._update_capture_rect()
             self._btn_pause.setText("\u23f8")
             self._btn_pause.setToolTip("暂停捕获")
             self._timer.start()
@@ -186,6 +192,25 @@ class ScreenFilterWindow(CustomFramelessWindow):
     def _request_debounce_process(self):
         self._debounce_timer.start(80)
 
+    def _update_capture_rect(self):
+        if not self.isVisible():
+            return
+        win_rect = wintypes.RECT()
+        ctypes.windll.user32.GetWindowRect(int(self.winId()), ctypes.byref(win_rect))
+        dpr = self.devicePixelRatio()
+        self._cap_l = win_rect.left + int(4 * dpr)
+        self._cap_t = win_rect.top + int(36 * dpr)
+        self._cap_w = max(1, (win_rect.right - win_rect.left) - int(8 * dpr))
+        self._cap_h = max(1, (win_rect.bottom - win_rect.top) - int(40 * dpr))
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._update_capture_rect()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_capture_rect()
+
     def _reprocess(self):
         self._debounce_timer.stop()
         if self._frozen_raw is None or not self.isVisible() or self._collapsed:
@@ -204,11 +229,11 @@ class ScreenFilterWindow(CustomFramelessWindow):
             return
 
         if self._capturing:
-            geo = self.geometry()
-            x, y = geo.x() + 4, geo.y() + 36
-            w, h = max(1, geo.width() - 8), max(1, geo.height() - 40)
             try:
-                sct_img = self._sct.grab({"left": x, "top": y, "width": w, "height": h})
+                sct_img = self._sct.grab({
+                    "left": self._cap_l, "top": self._cap_t,
+                    "width": self._cap_w, "height": self._cap_h,
+                })
                 raw = np.array(sct_img, dtype=np.uint8)
                 frozen_raw = raw[:, :, :3].copy()
             except Exception as ex:
@@ -240,11 +265,12 @@ class ScreenFilterWindow(CustomFramelessWindow):
     def start(self):
         self._capturing = True
         self._last_process_time = 0.0
-        self._timer.start(64)
+        self._timer.start(16)
         self.show()
         self.raise_()
         QApplication.processEvents()
         self._setup_affinity()
+        self._update_capture_rect()
 
     def stop(self):
         self._timer.stop()

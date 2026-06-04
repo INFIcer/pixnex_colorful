@@ -611,7 +611,8 @@ class ImageConvert:
         if qi.format() != QImage.Format_ARGB32:
             qi = qi.convertToFormat(QImage.Format_ARGB32)
         ptr = qi.constBits()
-        ptr.setsize(qi.sizeInBytes())
+        if hasattr(ptr, 'setsize'):
+            ptr.setsize(qi.sizeInBytes())
         arr = np.frombuffer(ptr, dtype=np.uint8).reshape(qi.height(), qi.width(), 4)
         return bgra_to_bgr(arr)
 

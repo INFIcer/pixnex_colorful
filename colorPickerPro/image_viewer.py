@@ -148,6 +148,10 @@ class _GraphicsView(QGraphicsView):
             self._rot_timer.start()
             event.accept()
             return
+        if event.button() == Qt.MiddleButton:
+            self.fit_in_view()
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
@@ -278,7 +282,10 @@ class ImageViewer(QWidget):
     def set_content(self, pixmap: QPixmap):
         self._pixmap = pixmap
         if pixmap is not None and not pixmap.isNull():
-            self._view.update_content(pixmap)
+            if not hasattr(self._view, '_pixmap_item') or self._view._pixmap_item is None:
+                self._view.set_image(pixmap)
+            else:
+                self._view.update_content(pixmap)
 
     def _on_zoom_changed(self, zoom):
         self._zoom_edit.setText(f"{zoom * 100:.1f}%")

@@ -10,6 +10,9 @@ from PySide6.QtCore import Qt
 from .screenPicker import ScreenPicker
 from .filter_lib import ImageFilter
 from .screenFilter import ScreenFilterWindow
+from .image_drop_widget import ImageDropWidget
+from .list_selection_dialog import ListSelectionDialog
+from .image_filter_compare import ImageFilterCompareWindow
 from .color_picker_widgets import (
     OKLCHModel, HSVModel, CIELCHModel, CIELabModel, HSIModel,
     BaseColorModel, ALL_MODELS,
@@ -87,11 +90,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(sep2)
 
         self._filter_windows = []
+        self._compare_windows = []
 
         filter_btn_layout = QHBoxLayout()
         filter_btn_layout.addStretch()
 
-        self._screen_filter_btn = QPushButton("🎨 创建屏幕滤镜")
+        self._screen_filter_btn = QPushButton("🎨 屏幕滤镜")
         self._screen_filter_btn.setStyleSheet("""
             QPushButton { padding: 6px 16px; font-size: 12px;
                 background-color: #7B1FA2; color: white;
@@ -108,6 +112,15 @@ class MainWindow(QMainWindow):
         self._screen_filter_btn.setMenu(self._filter_menu)
 
         filter_btn_layout.addWidget(self._screen_filter_btn)
+
+        self._image_drop = ImageDropWidget(
+            placeholder_text="拖入图像进行滤镜对比",
+            drop_hint="释放以对比滤镜"
+        )
+        self._image_drop.setFixedSize(110, 60)
+        self._image_drop.imageReceived.connect(self._on_drop_image)
+        filter_btn_layout.addWidget(self._image_drop)
+
         filter_btn_layout.addStretch()
         layout.addLayout(filter_btn_layout)
 
@@ -126,11 +139,31 @@ class MainWindow(QMainWindow):
         if win in self._filter_windows:
             self._filter_windows.remove(win)
 
+    def _on_drop_image(self, pixmap, filename):
+        all_filters = ImageFilter.all_filters()
+        names = [cls.name() for cls in all_filters]
+        dlg = ListSelectionDialog(
+            self, "选择对比滤镜", names,
+            selection_mode="multiple", checked_indices=[]
+        )
+        if dlg.exec() == ListSelectionDialog.Accepted:
+            indices = dlg.get_selected_indices()
+            if not indices:
+                return
+            selected_names = [names[i] for i in indices]
+            win = ImageFilterCompareWindow(pixmap, selected_names)
+            win.show()
+            self._compare_windows.append(win)
+            win.destroyed.connect(lambda w=win: self._compare_windows.remove(w) if w in self._compare_windows else None)
+
     def closeEvent(self, e):
         for win in self._filter_windows[:]:
             win.stop()
             win.close()
         self._filter_windows.clear()
+        for win in self._compare_windows[:]:
+            win.close()
+        self._compare_windows.clear()
         super().closeEvent(e)
 
     def _on_model_switch(self, name):

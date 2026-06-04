@@ -22,10 +22,17 @@ class ViewTransform:
         self.center_x = center_x
         self.center_y = center_y
 
+    def copy(self):
+        out = ViewTransform(self.zoom, self.rotation, self.flip_h, self.flip_v, self.center_x, self.center_y)
+        if hasattr(self, '_scroll_bar'):
+            out._scroll_bar = self._scroll_bar
+        return out
+
 
 class _GraphicsView(QGraphicsView):
     zoomChanged = Signal(float)
     rotationChanged = Signal(float)
+    transformChanged = Signal()
     saveRequested = Signal()
     copyRequested = Signal()
 
@@ -39,12 +46,9 @@ class _GraphicsView(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setFrameShape(QFrame.NoFrame)
-        self._zoom = 1.0
+        self._vt = ViewTransform()
         self._min_zoom = 0.05
         self._max_zoom = 50.0
-        self._rotation = 0.0
-        self._flip_h = False
-        self._flip_v = False
         self._rotate_speed = rotate_speed
         self._rot_dir = 0
 
@@ -68,35 +72,43 @@ class _GraphicsView(QGraphicsView):
         r = self._pixmap_item.boundingRect()
         self.scene().setSceneRect(r.adjusted(-margin, -margin, margin, margin))
 
-    def _rebuild_transform(self):
+    def _sync_center(self):
+        c = self.mapToScene(self.viewport().rect().center())
+        self._vt.center_x = c.x()
+        self._vt.center_y = c.y()
+
+    def _apply_transform(self):
+        vt = self._vt
         self.resetTransform()
-        self.scale(self._zoom, self._zoom)
-        self.rotate(self._rotation)
-        if self._flip_h:
+        self.scale(vt.zoom, vt.zoom)
+        self.rotate(vt.rotation)
+        if vt.flip_h:
             self.scale(-1, 1)
-        if self._flip_v:
+        if vt.flip_v:
             self.scale(1, -1)
+        self._sync_center()
+        self.zoomChanged.emit(vt.zoom)
+        self.rotationChanged.emit(vt.rotation)
+        self.transformChanged.emit()
 
     def set_zoom(self, zoom):
-        self._zoom = max(self._min_zoom, min(self._max_zoom, zoom))
-        self._rebuild_transform()
-        self.zoomChanged.emit(self._zoom)
+        self._vt.zoom = max(self._min_zoom, min(self._max_zoom, zoom))
+        self._apply_transform()
 
     def set_zoom_100(self):
         self.set_zoom(1.0)
 
     def set_rotation(self, angle):
-        self._rotation = angle % 360
-        self._rebuild_transform()
-        self.rotationChanged.emit(self._rotation)
+        self._vt.rotation = angle % 360
+        self._apply_transform()
 
     def fit_in_view(self):
         if not hasattr(self, '_pixmap_item') or self._pixmap_item is None:
             return
-        self._rotation = 0.0
-        self._flip_h = False
-        self._flip_v = False
-        self.resetTransform()
+        vt = self._vt
+        vt.rotation = 0.0
+        vt.flip_h = False
+        vt.flip_v = False
         vp = self.viewport().rect()
         scene_rect = self._pixmap_item.boundingRect()
         if scene_rect.isEmpty():
@@ -104,66 +116,65 @@ class _GraphicsView(QGraphicsView):
         scale_x = vp.width() / scene_rect.width()
         scale_y = vp.height() / scene_rect.height()
         s = min(scale_x, scale_y)
-        self._zoom = s
-        self.scale(s, s)
+        vt.zoom = s
+        self._apply_transform()
         self.centerOn(scene_rect.center())
-        self.zoomChanged.emit(self._zoom)
-        self.rotationChanged.emit(self._rotation)
+        self._sync_center()
 
     def wheelEvent(self, event: QWheelEvent):
         factor = 1.15
+        cur = self._vt.zoom
         if event.angleDelta().y() > 0:
-            new_zoom = self._zoom * factor
+            new_zoom = cur * factor
         else:
-            new_zoom = self._zoom / factor
+            new_zoom = cur / factor
         new_zoom = max(self._min_zoom, min(self._max_zoom, new_zoom))
-        if new_zoom != self._zoom:
-            scale_factor = new_zoom / self._zoom
-            self._zoom = new_zoom
-            self.scale(scale_factor, scale_factor)
-            self.zoomChanged.emit(self._zoom)
+        if new_zoom != cur:
+            self._vt.zoom = new_zoom
+            self._apply_transform()
 
     def flip_horizontal(self):
-        self._flip_h = not self._flip_h
-        self._rebuild_transform()
+        self._vt.flip_h = not self._vt.flip_h
+        self._apply_transform()
 
     def flip_vertical(self):
-        self._flip_v = not self._flip_v
-        self._rebuild_transform()
+        self._vt.flip_v = not self._vt.flip_v
+        self._apply_transform()
 
     def rotate_90(self):
-        self._rotation = (self._rotation + 90) % 360
-        self._rebuild_transform()
-        self.rotationChanged.emit(self._rotation)
+        self._vt.rotation = (self._vt.rotation + 90) % 360
+        self._apply_transform()
 
     def reset_rotation(self):
-        self._rotation = 0.0
-        self._rebuild_transform()
-        self.rotationChanged.emit(self._rotation)
+        self._vt.rotation = 0.0
+        self._apply_transform()
 
     def export_transform(self) -> ViewTransform:
-        center = self.mapToScene(self.viewport().rect().center())
-        return ViewTransform(
-            zoom=self._zoom, rotation=self._rotation,
-            flip_h=self._flip_h, flip_v=self._flip_v,
-            center_x=center.x(), center_y=center.y(),
-        )
+        out = self._vt.copy()
+        sb_h = self.horizontalScrollBar()
+        sb_v = self.verticalScrollBar()
+        if sb_h:
+            out._scroll_bar = (sb_h.value(), sb_v.value())
+        return out
 
     def import_transform(self, vt: ViewTransform):
-        self._zoom = vt.zoom
-        self._rotation = vt.rotation
-        self._flip_h = vt.flip_h
-        self._flip_v = vt.flip_v
-        self._rebuild_transform()
-        self.centerOn(QPointF(vt.center_x, vt.center_y))
-        self.zoomChanged.emit(self._zoom)
-        self.rotationChanged.emit(self._rotation)
+        self._vt = vt.copy()
+        self._apply_transform()
+        if hasattr(vt, '_scroll_bar') and vt._scroll_bar is not None:
+            self.centerOn(QPointF(vt.center_x, vt.center_y))
+            sb_h = self.horizontalScrollBar()
+            sb_v = self.verticalScrollBar()
+            if sb_h:
+                sb_h.setValue(vt._scroll_bar[0])
+                sb_v.setValue(vt._scroll_bar[1])
+        else:
+            self.centerOn(QPointF(vt.center_x, vt.center_y))
+        self._sync_center()
 
     def _on_rot_tick(self):
         step = self._rotate_speed * (self._rot_timer.interval() / 1000.0)
-        self._rotation = (self._rotation + step * self._rot_dir) % 360
-        self._rebuild_transform()
-        self.rotationChanged.emit(self._rotation)
+        self._vt.rotation = (self._vt.rotation + step * self._rot_dir) % 360
+        self._apply_transform()
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.XButton1:
@@ -188,6 +199,13 @@ class _GraphicsView(QGraphicsView):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+        self._sync_center()
+        self.transformChanged.emit()
+
+    def scrollContentsBy(self, dx, dy):
+        super().scrollContentsBy(dx, dy)
+        self._sync_center()
+        self.transformChanged.emit()
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
@@ -306,6 +324,10 @@ class ImageViewer(QWidget):
             QPushButton:hover {{ background-color: {color}; }}
             QPushButton:pressed {{ background-color: {color}; }}
         """
+
+    @property
+    def transformChanged(self):
+        return self._view.transformChanged
 
     def export_view_transform(self) -> ViewTransform:
         return self._view.export_transform()

@@ -85,12 +85,15 @@ class ListViewer(QWidget):
         HORIZONTAL = "horizontal"
         OVERLAP = "overlap"
 
-    itemSwitched = Signal(ListItemWidget, ListItemWidget)
+    itemSwitching = Signal(ListItemWidget)
+    itemSwitched = Signal(ListItemWidget)
+    viewModeChanging = Signal(object)
     viewModeChanged = Signal(object)
     closed = Signal()
 
     def __init__(self, items: Optional[list[QWidget]] = None,
-                 view_mode: ViewMode = ViewMode.OVERLAP, parent=None):
+                 view_mode: ViewMode = ViewMode.OVERLAP, parent=None,
+                 item_width_fn=None):
         super().__init__(parent)
         self._items: list[QWidget] = []
         self._item_widgets: list[ListItemWidget] = []
@@ -98,6 +101,7 @@ class ListViewer(QWidget):
         self._active_index = 0 if items else -1
         self._hover_index = -1
         self._nav_buttons: list[_NavButton] = []
+        self._item_width_fn = item_width_fn
 
         self._hover_timer = QTimer(self)
         self._hover_timer.setSingleShot(True)
@@ -223,24 +227,18 @@ class ListViewer(QWidget):
         n = len(self._items)
         if n == 0 or index < 0 or index >= n:
             return
-
-        old_liw = self._current_item_widget()
-
+        self.itemSwitching.emit(self._current_item_widget())
+        
         if self._view_mode == ListViewer.ViewMode.OVERLAP and index == self._active_index:
             if n == 1:
                 self._active_index = -1
-                self.itemSwitched.emit(old_liw, None)
             elif index == n - 1:
                 new_idx = index - 1
-                new_liw = self._item_widgets[new_idx]
                 self._active_index = new_idx
                 self._update_nav_button_styles()
-                self.itemSwitched.emit(old_liw, new_liw)
             else:
-                new_liw = self._item_widgets[index + 1]
                 self._active_index = index
                 self._update_nav_button_styles()
-                self.itemSwitched.emit(old_liw, new_liw)
         else:
             if self._active_index > index:
                 self._active_index -= 1
@@ -263,6 +261,8 @@ class ListViewer(QWidget):
                 self._overlap_stack.setCurrentIndex(
                     min(self._active_index, self._overlap_stack.count() - 1)
                 )
+
+        self.itemSwitched.emit(self._current_item_widget())
 
         if len(self._items) == 0:
             self.closed.emit()
@@ -291,10 +291,14 @@ class ListViewer(QWidget):
 
         for liw in self._item_widgets:
             liw.setParent(self._h_container)
-            sh = liw.sizeHint()
-            liw.setGeometry(x, self._H_MARGIN_TB, sh.width(), item_h)
+            if self._item_width_fn is not None:
+                w = self._item_width_fn(liw, item_h)
+            else:
+                sh = liw.sizeHint()
+                w = sh.width()
+            liw.setGeometry(x, self._H_MARGIN_TB, w, item_h)
             liw.show()
-            x += sh.width() + self._H_SPACING
+            x += w + self._H_SPACING
 
         total_w = x - self._H_SPACING + self._H_MARGIN_LR
         self._h_container.setMinimumSize(total_w, vp_h)
@@ -362,8 +366,10 @@ class ListViewer(QWidget):
                 return
             old_liw = self._item_widgets[cur] if cur < len(self._items) else None
             new_liw = self._item_widgets[idx]
+            if old_liw is not None:
+                self.itemSwitching.emit(old_liw)
             self._overlap_stack.setCurrentIndex(idx)
-            self.itemSwitched.emit(old_liw, new_liw)
+            self.itemSwitched.emit(new_liw)
 
     def _on_nav_hover_leave(self):
         self._hover_index = -1
@@ -374,8 +380,10 @@ class ListViewer(QWidget):
             if cur != self._active_index and self._active_index < self._overlap_stack.count():
                 old_liw = self._item_widgets[cur] if cur < len(self._items) else None
                 new_liw = self._item_widgets[self._active_index]
+                if old_liw is not None:
+                    self.itemSwitching.emit(old_liw)
                 self._overlap_stack.setCurrentIndex(self._active_index)
-                self.itemSwitched.emit(old_liw, new_liw)
+                self.itemSwitched.emit(new_liw)
 
     def eventFilter(self, obj, event):
         if obj == self._nav_container and event.type() == QEvent.Leave:
@@ -390,20 +398,25 @@ class ListViewer(QWidget):
                 item_h = vp.height() - self._H_MARGIN_TB * 2
                 x = self._H_MARGIN_LR
                 for liw in self._item_widgets:
-                    liw.setGeometry(x, self._H_MARGIN_TB, liw.width(), item_h)
-                    x += liw.width() + self._H_SPACING
+                    if self._item_width_fn is not None:
+                        w = self._item_width_fn(liw, item_h)
+                    else:
+                        w = liw.width()
+                    liw.setGeometry(x, self._H_MARGIN_TB, w, item_h)
+                    x += w + self._H_SPACING
         return super().eventFilter(obj, event)
 
     def _switch_to_item(self, index: int):
         if index < 0 or index >= len(self._items) or index == self._active_index:
             return
         old_liw = self._current_item_widget()
+        self.itemSwitching.emit(old_liw)
         new_liw = self._item_widgets[index]
         self._active_index = index
         if self._view_mode == ListViewer.ViewMode.OVERLAP:
             self._overlap_stack.setCurrentIndex(index)
         self._update_nav_button_styles()
-        self.itemSwitched.emit(old_liw, new_liw)
+        self.itemSwitched.emit(new_liw)
 
     def _current_widget(self):
         if 0 <= self._active_index < len(self._items):
@@ -434,6 +447,7 @@ class ListViewer(QWidget):
     def set_view_mode(self, mode: ViewMode):
         if mode == self._view_mode:
             return
+        self.viewModeChanging.emit(mode)
         self._view_mode = mode
         self._btn_toggle.setText(
             "横向对比" if mode == ListViewer.ViewMode.HORIZONTAL

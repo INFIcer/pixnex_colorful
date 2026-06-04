@@ -15,13 +15,52 @@ class ImageDropWidget(QWidget):
     def __init__(self, placeholder_text="在此处粘贴或拖入图像",
                  drop_hint="释放以读取图像", parent=None):
         super().__init__(parent)
-        self._placeholder = placeholder_text
-        self._drop_hint = drop_hint
+        self._placeholder_text = placeholder_text
+        self._drop_hint_text = drop_hint
         self._pixmap = QPixmap()
         self._drag_hover = False
+
+        self._placeholder_font = QFont("Microsoft YaHei", 9)
+        self._drop_hint_font = QFont("Microsoft YaHei", 10)
+        self._drop_hint_font.setBold(True)
+        self._placeholder_color = QColor(150, 150, 150)
+        self._drop_hint_color = QColor(0, 120, 215)
+
         self.setAcceptDrops(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAttribute(Qt.WA_StyledBackground, True)
+
+    @property
+    def placeholder_text(self) -> str:
+        return self._placeholder_text
+
+    @placeholder_text.setter
+    def placeholder_text(self, text: str):
+        self._placeholder_text = text
+        self.update()
+
+    @property
+    def drop_hint_text(self) -> str:
+        return self._drop_hint_text
+
+    @drop_hint_text.setter
+    def drop_hint_text(self, text: str):
+        self._drop_hint_text = text
+        self.update()
+
+    def set_placeholder_style(self, font: QFont = None, color: QColor = None):
+        if font is not None:
+            self._placeholder_font = font
+        if color is not None:
+            self._placeholder_color = color
+        self.update()
+
+    def set_drop_hint_style(self, font: QFont = None, color: QColor = None):
+        if font is not None:
+            self._drop_hint_font = font
+        if color is not None:
+            self._drop_hint_color = color
+        self.update()
 
     def set_pixmap(self, pixmap: QPixmap):
         self._pixmap = pixmap
@@ -42,20 +81,18 @@ class ImageDropWidget(QWidget):
             pen.setStyle(Qt.DashLine)
             p.setPen(pen)
             p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 8, 8)
-            p.setPen(QColor(0, 120, 215))
-            font = QFont("Microsoft YaHei", 14)
-            font.setBold(True)
-            p.setFont(font)
-            p.drawText(self.rect(), Qt.AlignCenter, self._drop_hint)
+            p.setPen(self._drop_hint_color)
+            p.setFont(self._drop_hint_font)
+            p.drawText(self.rect(), Qt.AlignCenter, self._drop_hint_text)
         else:
             p.fillRect(self.rect(), QColor(26, 26, 26))
             pen = QPen(QColor(85, 85, 85), 2)
             pen.setStyle(Qt.DashLine)
             p.setPen(pen)
             p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 8, 8)
-            p.setPen(QColor(150, 150, 150))
-            p.setFont(QFont("Microsoft YaHei", 12))
-            p.drawText(self.rect(), Qt.AlignCenter, self._placeholder)
+            p.setPen(self._placeholder_color)
+            p.setFont(self._placeholder_font)
+            p.drawText(self.rect(), Qt.AlignCenter, self._placeholder_text)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls() or event.mimeData().hasImage():

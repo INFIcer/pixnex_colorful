@@ -72,7 +72,7 @@ class FilterImageViewer(QWidget):
 
         toolbar.addStretch()
 
-        self._btn_params = QPushButton("\u2699 \u53c2\u6570")
+        self._btn_params = QPushButton("⚙ 参数")
         self._btn_params.setStyleSheet("""
             QPushButton { padding: 4px 12px; font-size: 11px;
                 background-color: #5C6BC0; color: white;
@@ -90,10 +90,22 @@ class FilterImageViewer(QWidget):
     def _init_filters(self):
         self._filter_combo.blockSignals(True)
         self._filter_combo.clear()
-        self._filter_combo.addItem("(\u65e0\u6ee4\u955c)", None)
+        self._filter_combo.addItem("(无滤镜)", None)
         for cls in ImageFilter.all_filters():
             self._filter_combo.addItem(f"  {cls.name()}", cls)
         self._filter_combo.blockSignals(False)
+
+    @property
+    def image_viewer(self):
+        return self._viewer
+
+    @property
+    def transformChanged(self):
+        return self._viewer.transformChanged
+
+    @property
+    def input_pixmap(self):
+        return self._input_pixmap
 
     def set_image(self, pixmap: QPixmap):
         self._input_pixmap = pixmap
@@ -188,11 +200,11 @@ def run_demo():
             pixmaps.append(QPixmap(p))
 
     if not pixmaps:
-        print("\u8b66\u544a\uff1a\u672a\u627e\u5230\u793a\u4f8b\u56fe\u7247\uff0c\u4f7f\u7528\u7a7a\u753b\u5e03")
+        print("警告：未找到示例图片，使用空画布")
         pixmaps.append(QPixmap())
 
     window = QWidget()
-    window.setWindowTitle("\u6ee4\u955c\u56fe\u50cf\u67e5\u770b\u5668\u6f14\u793a")
+    window.setWindowTitle("滤镜图像查看器演示")
     window.resize(900, 680)
 
     outer = QVBoxLayout(window)
@@ -212,7 +224,7 @@ def run_demo():
             _idx[0] = 1 - _idx[0]
             viewer.set_image(pixmaps[_idx[0]])
 
-        btn_switch = QPushButton("\u5207\u6362\u56fe\u50cf")
+        btn_switch = QPushButton("切换图像")
         btn_switch.setStyleSheet("""
             QPushButton { padding: 4px 14px; font-size: 11px;
                 background-color: #FF8F00; color: white;
@@ -225,7 +237,7 @@ def run_demo():
         demo_bar.addWidget(btn_switch)
 
     demo_bar.addStretch()
-    lbl_hint = QLabel("\u5de6\u952e\u62d6\u62fd\u5e73\u79fb | \u6eda\u8f6e\u7f29\u653e | \u4fa7\u952e\u65cb\u8f6c")
+    lbl_hint = QLabel("左键拖拽平移 | 滚轮缩放 | 侧键旋转")
     lbl_hint.setStyleSheet("color: #999; font-size: 11px;")
     demo_bar.addWidget(lbl_hint)
 

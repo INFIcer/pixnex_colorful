@@ -13,6 +13,16 @@ from PySide6.QtGui import (
 )
 
 
+class ViewTransform:
+    def __init__(self, zoom=1.0, rotation=0.0, flip_h=False, flip_v=False, center_x=0.0, center_y=0.0):
+        self.zoom = zoom
+        self.rotation = rotation
+        self.flip_h = flip_h
+        self.flip_v = flip_v
+        self.center_x = center_x
+        self.center_y = center_y
+
+
 class _GraphicsView(QGraphicsView):
     zoomChanged = Signal(float)
     rotationChanged = Signal(float)
@@ -129,6 +139,24 @@ class _GraphicsView(QGraphicsView):
     def reset_rotation(self):
         self._rotation = 0.0
         self._rebuild_transform()
+        self.rotationChanged.emit(self._rotation)
+
+    def export_transform(self) -> ViewTransform:
+        center = self.mapToScene(self.viewport().rect().center())
+        return ViewTransform(
+            zoom=self._zoom, rotation=self._rotation,
+            flip_h=self._flip_h, flip_v=self._flip_v,
+            center_x=center.x(), center_y=center.y(),
+        )
+
+    def import_transform(self, vt: ViewTransform):
+        self._zoom = vt.zoom
+        self._rotation = vt.rotation
+        self._flip_h = vt.flip_h
+        self._flip_v = vt.flip_v
+        self._rebuild_transform()
+        self.centerOn(QPointF(vt.center_x, vt.center_y))
+        self.zoomChanged.emit(self._zoom)
         self.rotationChanged.emit(self._rotation)
 
     def _on_rot_tick(self):
@@ -279,6 +307,12 @@ class ImageViewer(QWidget):
             QPushButton:pressed {{ background-color: {color}; }}
         """
 
+    def export_view_transform(self) -> ViewTransform:
+        return self._view.export_transform()
+
+    def import_view_transform(self, vt: ViewTransform):
+        self._view.import_transform(vt)
+
     def set_content(self, pixmap: QPixmap):
         self._pixmap = pixmap
         if pixmap is not None and not pixmap.isNull():
@@ -327,6 +361,16 @@ class ImageViewer(QWidget):
         QApplication.clipboard().setPixmap(self._pixmap)
 
 
+def _demo_btn_style(color: str) -> str:
+    return f"""
+        QPushButton {{ padding: 4px 14px; font-size: 11px;
+            background-color: {color}; color: white;
+            border: none; border-radius: 3px; }}
+        QPushButton:hover {{ background-color: {color}; }}
+        QPushButton:pressed {{ background-color: {color}; }}
+    """
+
+
 def run_demo():
     import os
     app = QApplication.instance() or QApplication(sys.argv)
@@ -364,13 +408,7 @@ def run_demo():
 
     _idx = [0]
     btn_switch = QPushButton("切换图像")
-    btn_switch.setStyleSheet("""
-        QPushButton { padding: 4px 14px; font-size: 11px;
-            background-color: #FF8F00; color: white;
-            border: none; border-radius: 3px; }
-        QPushButton:hover { background-color: #FF6F00; }
-        QPushButton:pressed { background-color: #E65100; }
-    """)
+    btn_switch.setStyleSheet(_demo_btn_style("#FF8F00"))
     btn_switch.setCursor(Qt.PointingHandCursor)
 
     def on_switch():
@@ -380,6 +418,26 @@ def run_demo():
 
     btn_switch.clicked.connect(on_switch)
     demo_bar.addWidget(btn_switch)
+
+    _saved_vt = [None]
+    btn_export = QPushButton("导出")
+    btn_export.setStyleSheet(_demo_btn_style("#00897B"))
+    btn_export.setCursor(Qt.PointingHandCursor)
+    def on_export():
+        _saved_vt[0] = viewer.export_view_transform()
+        btn_export.setText("已导出")
+    btn_export.clicked.connect(on_export)
+    demo_bar.addWidget(btn_export)
+
+    btn_import = QPushButton("导入")
+    btn_import.setStyleSheet(_demo_btn_style("#5C6BC0"))
+    btn_import.setCursor(Qt.PointingHandCursor)
+    def on_import():
+        if _saved_vt[0] is not None:
+            viewer.import_view_transform(_saved_vt[0])
+    btn_import.clicked.connect(on_import)
+    demo_bar.addWidget(btn_import)
+
     demo_bar.addStretch()
 
     lbl_hint = QLabel("左键拖拽平移 | 滚轮缩放 | 侧键旋转")

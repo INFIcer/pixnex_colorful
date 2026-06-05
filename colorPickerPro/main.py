@@ -117,7 +117,7 @@ class MainWindow(QMainWindow):
             placeholder_text="拖入图像进行滤镜对比",
             drop_hint="释放以对比滤镜"
         )
-        self._image_drop.setFixedSize(110, 60)
+        self._image_drop.setFixedSize(150, 40)
         self._image_drop.imageReceived.connect(self._on_drop_image)
         filter_btn_layout.addWidget(self._image_drop)
 

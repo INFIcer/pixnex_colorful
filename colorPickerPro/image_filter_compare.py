@@ -23,7 +23,6 @@ class ImageFilterCompareWindow(QWidget):
     def __init__(self, pixmap: QPixmap, filter_names: list[str], parent=None):
         super().__init__(parent)
         self.setWindowTitle("图像滤镜对比")
-        self.setMinimumSize(800, 500)
         self.resize(1000, 650)
         self._input_pixmap = pixmap
 

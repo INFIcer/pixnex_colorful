@@ -592,8 +592,10 @@ class MultiplyFilter(ImageFilter):
 class RateOfChangeFilter(ImageFilter):
     def __init__(self):
         self._params = [
-            RangeParam("频率范围", "灰度黑到白对应的条纹周期数范围", 0.1, 30, 1.0, 8.0, 0.1),
+            RangeParam("频率范围", "灰度黑到白对应的条纹周期数范围", 0, 50, 1.0, 8.0, 0.1),
             FilterParam("方向(°)", "条纹延伸角度，0°为水平方向", 0, 360, 0, 1),
+            BoolParam("反转", "反转频率映射：黑→最大频率，白→最小频率", False),
+            FilterParam("相位(°)", "条纹相位偏移", 0, 360, 0, 1),
         ]
 
     @classmethod
@@ -622,7 +624,11 @@ class RateOfChangeFilter(ImageFilter):
         max_proj = w * abs(cos_t) + h * abs(sin_t)
         proj_norm = proj / max_proj if max_proj > 0 else proj
 
+        phase = np.radians(self._params[3].value)
+
         gray_f = gray.astype(np.float32) / 255.0
+        if self._params[2].value:
+            gray_f = 1.0 - gray_f
         freq = min_freq + gray_f * (max_freq - min_freq)
 
         box_r = 2
@@ -632,7 +638,7 @@ class RateOfChangeFilter(ImageFilter):
         for j in range(w):
             freq[:, j] = np.convolve(freq[:, j], kernel, mode='same')
 
-        stripe = np.sin(2 * np.pi * freq * proj_norm)
+        stripe = np.sin(2 * np.pi * freq * proj_norm + phase)
         return ((stripe + 1) * 127.5).clip(0, 255).astype(np.uint8)
 
 

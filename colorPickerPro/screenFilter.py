@@ -15,19 +15,23 @@ import ctypes
 import hashlib
 import numpy as np
 import mss
-import mss.tools
 from typing import List
 
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QAction, QClipboard
 from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QLabel, QPushButton,
     QVBoxLayout, QListWidget, QListWidgetItem,
-    QGroupBox, QMessageBox, QDialog,
+    QGroupBox, QMessageBox, QDialog, QMenu, QFileDialog,
 )
-
-from .filter_lib import ImageFilter, ImageConvert
-from .customFrame import CustomFramelessWindow, PixmapWidget
+if __name__ == "__main__" and (__package__ is None or __package__ == ''):
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from colorPickerPro.filter_lib import ImageFilter, ImageConvert
+    from colorPickerPro.customFrame import CustomFramelessWindow, PixmapWidget
+else:
+    from .filter_lib import ImageFilter, ImageConvert
+    from .customFrame import CustomFramelessWindow, PixmapWidget
 
 
 # ============================================================
@@ -262,6 +266,36 @@ class ScreenFilterWindow(CustomFramelessWindow):
     def stop(self):
         self._timer.stop()
         self.hide()
+
+    def contextMenuEvent(self, event):
+        pm = self._content.pixmap()
+        if pm is None or pm.isNull():
+            return
+        menu = QMenu(self)
+        act_save = QAction("保存图像", self)
+        act_save.triggered.connect(self._save_image)
+        menu.addAction(act_save)
+        act_copy = QAction("复制图像", self)
+        act_copy.triggered.connect(self._copy_image)
+        menu.addAction(act_copy)
+        menu.exec(event.globalPos())
+
+    def _save_image(self):
+        pm = self._content.pixmap()
+        if pm is None or pm.isNull():
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存图像", "",
+            "PNG 图像 (*.png);;JPEG 图像 (*.jpg *.jpeg);;BMP 图像 (*.bmp)"
+        )
+        if path:
+            pm.save(path)
+
+    def _copy_image(self):
+        pm = self._content.pixmap()
+        if pm is None or pm.isNull():
+            return
+        QApplication.clipboard().setPixmap(pm)
 
     def closeEvent(self, e):
         self._timer.stop()

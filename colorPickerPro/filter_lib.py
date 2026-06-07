@@ -589,6 +589,53 @@ class MultiplyFilter(ImageFilter):
         return result.astype(np.uint8)
 
 
+class RateOfChangeFilter(ImageFilter):
+    def __init__(self):
+        self._params = [
+            RangeParam("频率范围", "灰度黑到白对应的条纹周期数范围", 0.1, 30, 1.0, 8.0, 0.1),
+            FilterParam("方向(°)", "条纹延伸角度，0°为水平方向", 0, 360, 0, 1),
+        ]
+
+    @classmethod
+    def name(cls) -> str:
+        return "频率变化率"
+
+    def exposed_parameters(self):
+        return self._params
+
+    def process(self, img: np.ndarray) -> np.ndarray:
+        gray = bgr_to_gray(img)
+        h, w = gray.shape
+
+        min_freq = self._params[0].low
+        max_freq = self._params[0].high
+        angle = self._params[1].value
+
+        theta = np.radians(angle)
+        cos_t, sin_t = np.cos(theta), np.sin(theta)
+
+        y_idx = np.arange(h, dtype=np.float32)
+        x_idx = np.arange(w, dtype=np.float32)
+        y_grid, x_grid = np.meshgrid(y_idx, x_idx, indexing='ij')
+
+        proj = x_grid * cos_t + y_grid * sin_t
+        max_proj = w * abs(cos_t) + h * abs(sin_t)
+        proj_norm = proj / max_proj if max_proj > 0 else proj
+
+        gray_f = gray.astype(np.float32) / 255.0
+        freq = min_freq + gray_f * (max_freq - min_freq)
+
+        box_r = 2
+        kernel = np.ones(box_r * 2 + 1, dtype=np.float32) / (box_r * 2 + 1)
+        for i in range(h):
+            freq[i, :] = np.convolve(freq[i, :], kernel, mode='same')
+        for j in range(w):
+            freq[:, j] = np.convolve(freq[:, j], kernel, mode='same')
+
+        stripe = np.sin(2 * np.pi * freq * proj_norm)
+        return ((stripe + 1) * 127.5).clip(0, 255).astype(np.uint8)
+
+
 # ============================================================
 # 图像转换工具
 # ============================================================

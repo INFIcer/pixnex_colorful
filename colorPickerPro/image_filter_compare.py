@@ -1,19 +1,15 @@
 import sys
 from functools import partial
-from PySide6.QtCore import QTimer, Slot
 from PySide6.QtWidgets import QWidget, QVBoxLayout
 from PySide6.QtGui import QPixmap
 
 if __name__ == "__main__" and (__package__ is None or __package__ == ''):
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from colorPickerPro.list_viewer import ListItemWidget
     from colorPickerPro.list_viewer import ListViewer
     from colorPickerPro.filter_image_viewer import FilterImageViewer
     from colorPickerPro.image_viewer import ViewTransform
-    from colorPickerPro.filter_lib import ImageFilter
 else:
-    from .list_viewer import ListItemWidget
     from .list_viewer import ListViewer
     from .filter_image_viewer import FilterImageViewer
     from .image_viewer import ViewTransform

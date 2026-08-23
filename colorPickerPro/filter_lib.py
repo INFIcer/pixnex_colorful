@@ -2,7 +2,7 @@
 滤镜库：模块化设计，新增滤镜只需继承 ImageFilter
 =============================================
 包含：
-- 参数类型：FilterParam, RangeParam, BoolParam, ColorParam
+- 参数类型：FilterParam, RangeParam, BoolParam, ColorParam, TextParam, FileParam, Vec2Param
 - 依赖系统：add_dependency()
 - 滤镜基类：ImageFilter (自动注册子类)
 - 内置滤镜：灰度、色度、边缘检测、反转、怀旧、正片叠底等
@@ -18,6 +18,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPixmap, QImage
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSlider, QDoubleSpinBox,
     QSpinBox, QCheckBox, QFrame, QPushButton, QLineEdit, QGraphicsOpacityEffect,
+    QFileDialog,
 )
 from .colorMath import (
     bgr_to_cielch, bgr_to_gray,
@@ -373,6 +374,244 @@ class ColorParam:
                     pass
             hex_edit.blockSignals(True); hex_edit.setText(f"#{self._r:02X}{self._g:02X}{self._b:02X}"); hex_edit.blockSignals(False)
         hex_edit.editingFinished.connect(on_hex)
+
+        return container
+
+
+class TextParam:
+    """描述一个文本型参数（单行文本输入框）。"""
+
+    def __init__(self, name, description, default=""):
+        self.name = name
+        self.description = description
+        self.value = default
+        self._listeners = []
+        self._container = None
+        self._opacity_effect = None
+
+    def on_value_changed(self, cb):
+        self._listeners.append(cb)
+
+    def _notify_value_changed(self):
+        for cb in self._listeners:
+            cb()
+
+    def set_enabled(self, enabled):
+        if self._container:
+            if enabled:
+                if self._opacity_effect:
+                    self._container.setGraphicsEffect(None)
+                    self._opacity_effect = None
+            else:
+                if self._opacity_effect is None:
+                    self._opacity_effect = QGraphicsOpacityEffect()
+                    self._opacity_effect.setOpacity(0.35)
+                self._container.setGraphicsEffect(self._opacity_effect)
+            self._container.setEnabled(enabled)
+
+    def create_widget(self, on_changed):
+        container = QWidget()
+        self._container = container
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        lbl = QLabel(self.name)
+        lbl.setObjectName("paramName")
+        lbl.setFixedWidth(72)
+        lbl.setToolTip(self.description)
+        row.addWidget(lbl)
+
+        edit = QLineEdit()
+        edit.setText(self.value)
+        edit.setPlaceholderText("请输入文本...")
+        edit.setStyleSheet("QLineEdit { background: #3a3a3a; color: white; border: 1px solid #555;"
+                           " border-radius: 3px; padding: 2px 4px; font-size: 11px; }")
+        row.addWidget(edit, 1)
+
+        def on_edit():
+            self.value = edit.text()
+            self._notify_value_changed()
+            on_changed()
+
+        edit.editingFinished.connect(on_edit)
+
+        return container
+
+
+class FileParam:
+    """描述一个文件型参数：路径输入框 + 文件选择按钮，可指定格式筛选。"""
+
+    def __init__(self, name, description, default="", file_filter="All Files (*)"):
+        self.name = name
+        self.description = description
+        self.value = default
+        self.file_filter = file_filter
+        self._listeners = []
+        self._container = None
+        self._opacity_effect = None
+
+    def on_value_changed(self, cb):
+        self._listeners.append(cb)
+
+    def _notify_value_changed(self):
+        for cb in self._listeners:
+            cb()
+
+    def set_enabled(self, enabled):
+        if self._container:
+            if enabled:
+                if self._opacity_effect:
+                    self._container.setGraphicsEffect(None)
+                    self._opacity_effect = None
+            else:
+                if self._opacity_effect is None:
+                    self._opacity_effect = QGraphicsOpacityEffect()
+                    self._opacity_effect.setOpacity(0.35)
+                self._container.setGraphicsEffect(self._opacity_effect)
+            self._container.setEnabled(enabled)
+
+    def create_widget(self, on_changed):
+        container = QWidget()
+        self._container = container
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        lbl = QLabel(self.name)
+        lbl.setObjectName("paramName")
+        lbl.setFixedWidth(72)
+        lbl.setToolTip(self.description)
+        row.addWidget(lbl)
+
+        edit = QLineEdit()
+        edit.setText(self.value)
+        edit.setStyleSheet("QLineEdit { background: #3a3a3a; color: white; border: 1px solid #555;"
+                           " border-radius: 3px; padding: 2px 4px; font-size: 11px; }")
+        row.addWidget(edit, 1)
+
+        btn = QPushButton("浏览...")
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setStyleSheet("""
+            QPushButton { background: #5C6BC0; color: white; border: none;
+                          border-radius: 3px; padding: 2px 8px; font-size: 11px; }
+            QPushButton:hover { background: #3F51B5; }
+            QPushButton:pressed { background: #303F9F; }
+        """)
+        row.addWidget(btn)
+
+        def sync(path):
+            self.value = path
+            edit.blockSignals(True); edit.setText(path); edit.blockSignals(False)
+            self._notify_value_changed()
+            on_changed()
+
+        def on_edit():
+            sync(edit.text())
+
+        def browse():
+            path, _ = QFileDialog.getOpenFileName(
+                container, "选择文件", self.value, self.file_filter)
+            if path:
+                sync(path)
+
+        edit.editingFinished.connect(on_edit)
+        btn.clicked.connect(browse)
+
+        return container
+
+
+class Vec2Param:
+    """描述一个 2D 坐标参数（两个浮点数输入框 X / Y）。"""
+
+    def __init__(self, name, description, vmin, vmax, default_x, default_y, step=0.1):
+        self.name = name
+        self.description = description
+        self.vmin = vmin
+        self.vmax = vmax
+        self.step = step
+        self._x = default_x
+        self._y = default_y
+        self._listeners = []
+        self._container = None
+        self._opacity_effect = None
+
+    @property
+    def value(self):
+        return (self._x, self._y)
+
+    @value.setter
+    def value(self, xy):
+        self._x = float(np.clip(xy[0], self.vmin, self.vmax))
+        self._y = float(np.clip(xy[1], self.vmin, self.vmax))
+
+    def on_value_changed(self, cb):
+        self._listeners.append(cb)
+
+    def _notify_value_changed(self):
+        for cb in self._listeners:
+            cb()
+
+    def set_enabled(self, enabled):
+        if self._container:
+            if enabled:
+                if self._opacity_effect:
+                    self._container.setGraphicsEffect(None)
+                    self._opacity_effect = None
+            else:
+                if self._opacity_effect is None:
+                    self._opacity_effect = QGraphicsOpacityEffect()
+                    self._opacity_effect.setOpacity(0.35)
+                self._container.setGraphicsEffect(self._opacity_effect)
+            self._container.setEnabled(enabled)
+
+    def create_widget(self, on_changed):
+        container = QWidget()
+        self._container = container
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+
+        lbl = QLabel(self.name)
+        lbl.setObjectName("paramName")
+        lbl.setFixedWidth(56)
+        lbl.setToolTip(self.description)
+        row.addWidget(lbl)
+
+        lbl_x = QLabel("X")
+        lbl_x.setStyleSheet("color: #888; font-size: 11px;")
+        row.addWidget(lbl_x)
+
+        sp_x = QDoubleSpinBox()
+        sp_x.setRange(self.vmin, self.vmax)
+        sp_x.setDecimals(1 if isinstance(self.step, int) and self.step >= 1 else 3)
+        sp_x.setSingleStep(self.step)
+        sp_x.setValue(self._x)
+        sp_x.setFixedWidth(80)
+        row.addWidget(sp_x)
+
+        lbl_y = QLabel("Y")
+        lbl_y.setStyleSheet("color: #888; font-size: 11px;")
+        row.addWidget(lbl_y)
+
+        sp_y = QDoubleSpinBox()
+        sp_y.setRange(self.vmin, self.vmax)
+        sp_y.setDecimals(1 if isinstance(self.step, int) and self.step >= 1 else 3)
+        sp_y.setSingleStep(self.step)
+        sp_y.setValue(self._y)
+        sp_y.setFixedWidth(80)
+        row.addWidget(sp_y)
+
+        row.addStretch()
+
+        def sync():
+            self._x = sp_x.value()
+            self._y = sp_y.value()
+            self._notify_value_changed()
+            on_changed()
+
+        sp_x.valueChanged.connect(sync)
+        sp_y.valueChanged.connect(sync)
 
         return container
 

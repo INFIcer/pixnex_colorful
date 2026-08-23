@@ -5,13 +5,17 @@
 - 参数类型：FilterParam, RangeParam, BoolParam, ColorParam
 - 依赖系统：add_dependency()
 - 滤镜基类：ImageFilter (自动注册子类)
+- 处理接口：process 为统一调用入口，按存在性检测 process_cpu / process_gpu
+  并优先执行 GPU 版本（着色器），否则回退 CPU 版本
 - 内置滤镜：灰度、色度、边缘检测、反转、怀旧、正片叠底等
 - 工具：ImageConvert, _RangeSlider
 """
 
 import numpy as np
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import List
+
+from .shader_engine import ShaderEngine, GLSL_COMMON
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPainter, QColor, QPen, QPixmap, QImage
@@ -395,7 +399,11 @@ def add_dependency(target_param, source_param, condition_fn):
 # ============================================================
 
 class ImageFilter(ABC):
-    """滤镜基类。子类自动注册，无需手动添加。"""
+    """滤镜基类。子类自动注册，无需手动添加。
+
+    子类实现 process_cpu（必需）作为 CPU 处理，可选实现 process_gpu
+    作为 GPU 处理（着色器实现）。process 为统一调用接口，不应被子类重写。
+    """
 
     @staticmethod
     def all_filters() -> List[type]:
@@ -405,9 +413,36 @@ class ImageFilter(ABC):
     def name(cls) -> str:
         return cls.__name__
 
-    @abstractmethod
     def process(self, img: np.ndarray) -> np.ndarray:
-        raise NotImplementedError
+        """统一处理入口：优先执行 GPU 版本（process_gpu），否则回退 CPU 版本（process_cpu）。"""
+        if self.supports_gpu():
+            try:
+                engine = ShaderEngine.instance()
+            except Exception:
+                engine = None
+            if engine is not None and engine.available():
+                try:
+                    result = self.process_gpu(img)
+                    print(f"[ImageFilter] {type(self).__name__} 使用 GPU 版本处理")
+                    return result
+                except Exception as ex:
+                    print(f"[ImageFilter] {type(self).__name__} GPU 处理失败，回退 CPU: {ex}")
+        if self.supports_cpu():
+            print(f"[ImageFilter] {type(self).__name__} 使用 CPU 版本处理")
+            return self.process_cpu(img)
+        raise NotImplementedError(
+            f"{type(self).__name__} 未实现 process_cpu 或 process_gpu"
+        )
+
+    @classmethod
+    def supports_cpu(cls) -> bool:
+        """是否存在 CPU 处理方法 process_cpu。"""
+        return hasattr(cls, 'process_cpu')
+
+    @classmethod
+    def supports_gpu(cls) -> bool:
+        """是否存在 GPU 处理方法 process_gpu。"""
+        return hasattr(cls, 'process_gpu')
 
     def exposed_parameters(self) -> List[FilterParam]:
         return []
@@ -417,47 +452,239 @@ class ImageFilter(ABC):
 # 内置滤镜
 # ============================================================
 
+# ---------- 滤镜着色器（GLSL 片段着色器，输入纹理为 RGB 0..1） ----------
+
+_SHADER_RGB_GRAY = GLSL_COMMON + """\
+void main() {
+    float g = gray_of(v_uv) / 255.0;
+    fragColor = vec4(vec3(g), 1.0);
+}
+"""
+
+_SHADER_LAB_GRAY = GLSL_COMMON + """\
+void main() {
+    vec3 lab = rgb_to_lab(texture(u_tex, v_uv).rgb);
+    float L = clamp(lab.r * 2.55, 0.0, 255.0) / 255.0;
+    fragColor = vec4(vec3(L), 1.0);
+}
+"""
+
+_SHADER_LCH_SATURATION = GLSL_COMMON + """\
+void main() {
+    vec3 lab = rgb_to_lab(texture(u_tex, v_uv).rgb);
+    float C = clamp(sqrt(lab.g * lab.g + lab.b * lab.b) * 1.7, 0.0, 255.0) / 255.0;
+    fragColor = vec4(vec3(C), 1.0);
+}
+"""
+
+_SHADER_HSV_SATURATION = GLSL_COMMON + """\
+void main() {
+    float s = rgb_to_hsv_s(texture(u_tex, v_uv).rgb);
+    fragColor = vec4(vec3(clamp(s * 255.0, 0.0, 255.0) / 255.0), 1.0);
+}
+"""
+
+_SHADER_HLS_LIGHTNESS = GLSL_COMMON + """\
+void main() {
+    float l = rgb_to_hls_l(texture(u_tex, v_uv).rgb);
+    fragColor = vec4(vec3(clamp(l * 255.0, 0.0, 255.0) / 255.0), 1.0);
+}
+"""
+
+_SHADER_EDGE_DETECT = GLSL_COMMON + """\
+uniform float u_low;
+uniform float u_high;
+void main() {
+    vec2 t = 1.0 / u_resolution;
+    vec2 pi = floor(v_uv * u_resolution);
+    if (pi.x <= 0.0 || pi.x >= u_resolution.x - 1.0 ||
+        pi.y <= 0.0 || pi.y >= u_resolution.y - 1.0) {
+        fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+    float rx = gray_of(v_uv + vec2(t.x, 0.0));
+    float lx = gray_of(v_uv - vec2(t.x, 0.0));
+    float dy = gray_of(v_uv + vec2(0.0, t.y));
+    float uy = gray_of(v_uv - vec2(0.0, t.y));
+    float gx = rx - lx;
+    float gy = dy - uy;
+    float mag = sqrt(gx * gx + gy * gy);
+    float v;
+    if (mag > u_high) v = 255.0;
+    else if (mag > u_low) v = min(mag, 255.0);
+    else v = 0.0;
+    fragColor = vec4(vec3(v / 255.0), 1.0);
+}
+"""
+
+_SHADER_INVERT = GLSL_COMMON + """\
+void main() {
+    fragColor = vec4(vec3(1.0) - texture(u_tex, v_uv).rgb, 1.0);
+}
+"""
+
+_SHADER_SEPIA = GLSL_COMMON + """\
+void main() {
+    vec3 c = texture(u_tex, v_uv).rgb;
+    vec3 o;
+    o.r = 0.189 * c.r + 0.769 * c.g + 0.393 * c.b;
+    o.g = 0.168 * c.r + 0.686 * c.g + 0.349 * c.b;
+    o.b = 0.131 * c.r + 0.534 * c.g + 0.272 * c.b;
+    fragColor = vec4(clamp(o, 0.0, 1.0), 1.0);
+}
+"""
+
+_SHADER_MULTIPLY = GLSL_COMMON + """\
+uniform vec3 u_color;
+void main() {
+    vec3 c = texture(u_tex, v_uv).rgb;
+    fragColor = vec4(c * (u_color / 255.0), 1.0);
+}
+"""
+
+_SHADER_RATE_OF_CHANGE = GLSL_COMMON + """\
+uniform float u_min_freq;
+uniform float u_max_freq;
+uniform float u_angle;
+float sample_freq(vec2 uv, float min_f, float max_f) {
+    float g = gray_of(uv);
+    return min_f + (g / 255.0) * (max_f - min_f);
+}
+void main() {
+    float theta = radians(u_angle);
+    float ct = cos(theta);
+    float st = sin(theta);
+    vec2 px = v_uv * u_resolution;
+    float proj = floor(px.x) * ct + floor(px.y) * st;
+    float max_proj = u_resolution.x * abs(ct) + u_resolution.y * abs(st);
+    float proj_norm = max_proj > 1e-6 ? proj / max_proj : proj;
+    float freq = 0.0;
+    vec2 t = 1.0 / u_resolution;
+    for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            vec2 uv = v_uv + vec2(float(dx), float(dy)) * t;
+            if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0)
+                continue;
+            freq += sample_freq(uv, u_min_freq, u_max_freq);
+        }
+    }
+    freq /= 25.0;
+    float stripe = sin(6.283185307179586 * freq * proj_norm);
+    float v = (stripe + 1.0) * 127.5;
+    fragColor = vec4(vec3(clamp(v, 0.0, 255.0) / 255.0), 1.0);
+}
+"""
+
+_SHADER_DETAIL_ANALYZE = GLSL_COMMON + """\
+uniform float u_en_lab;
+uniform float u_en_chroma;
+uniform float u_lab_low;
+uniform float u_lab_high;
+uniform float u_chroma_low;
+uniform float u_chroma_high;
+uniform float u_lab_weight;
+uniform float u_chroma_weight;
+uniform vec3 u_lab_color;
+uniform vec3 u_chroma_color;
+
+vec2 lab_lc(vec2 uv) {
+    vec3 lab = rgb_to_lab(texture(u_tex, uv).rgb);
+    float L = clamp(lab.r * 2.55, 0.0, 255.0);
+    float C = clamp(sqrt(lab.g * lab.g + lab.b * lab.b) * 1.7, 0.0, 255.0);
+    return vec2(L, C);
+}
+
+float edge_value(float mag, float low, float high) {
+    if (mag > high) return 255.0;
+    else if (mag > low) return min(mag, 255.0);
+    else return 0.0;
+}
+
+void main() {
+    vec2 t = 1.0 / u_resolution;
+    vec2 pi = floor(v_uv * u_resolution);
+    bool border = pi.x <= 0.0 || pi.x >= u_resolution.x - 1.0 ||
+                  pi.y <= 0.0 || pi.y >= u_resolution.y - 1.0;
+
+    vec2 lc_c = lab_lc(v_uv);
+    vec2 lc_r = lab_lc(v_uv + vec2(t.x, 0.0));
+    vec2 lc_l = lab_lc(v_uv - vec2(t.x, 0.0));
+    vec2 lc_d = lab_lc(v_uv + vec2(0.0, t.y));
+    vec2 lc_u = lab_lc(v_uv - vec2(0.0, t.y));
+
+    float gx = lc_r.x - lc_l.x;
+    float gy = lc_d.x - lc_u.x;
+    float e_lab = border ? 0.0
+        : edge_value(sqrt(gx * gx + gy * gy), u_lab_low, u_lab_high) * u_lab_weight;
+
+    gx = lc_r.y - lc_l.y;
+    gy = lc_d.y - lc_u.y;
+    float e_chroma = border ? 0.0
+        : edge_value(sqrt(gx * gx + gy * gy), u_chroma_low, u_chroma_high) * u_chroma_weight;
+
+    vec3 lab_rgb = u_lab_color / 255.0;
+    vec3 chroma_rgb = u_chroma_color / 255.0;
+    vec3 acc = vec3(0.0);
+    if (u_en_lab > 0.5)
+        acc += (e_lab / 255.0) * lab_rgb;
+    if (u_en_chroma > 0.5)
+        acc += (e_chroma / 255.0) * chroma_rgb;
+    fragColor = vec4(clamp(acc, 0.0, 1.0), 1.0);
+}
+"""
+
+
 class LabGrayFilter(ImageFilter):
     @classmethod
     def name(cls) -> str:
         return "Lab灰度"
-    def process(self, img: np.ndarray) -> np.ndarray:
+    def process_cpu(self, img: np.ndarray) -> np.ndarray:
         lch = bgr_to_cielch(img)
         L = lch[:,:,0]
         return np.clip(L * 2.55, 0, 255).astype(np.uint8)
+    def process_gpu(self, img: np.ndarray) -> np.ndarray:
+        return ShaderEngine.instance().apply(_SHADER_LAB_GRAY, img, gray=True)
 
 class LCHSaturationFilter(ImageFilter):
     @classmethod
     def name(cls) -> str:
         return "LCH色度"
-    def process(self, img: np.ndarray) -> np.ndarray:
+    def process_cpu(self, img: np.ndarray) -> np.ndarray:
         lch = bgr_to_cielch(img)
         C = lch[:,:,1]
         return np.clip(C * 1.7, 0, 255).astype(np.uint8)
+    def process_gpu(self, img: np.ndarray) -> np.ndarray:
+        return ShaderEngine.instance().apply(_SHADER_LCH_SATURATION, img, gray=True)
 
 
 class RGBGrayFilter(ImageFilter):
     @classmethod
     def name(cls) -> str:
         return "RGB灰度"
-    def process(self, img: np.ndarray) -> np.ndarray:
+    def process_cpu(self, img: np.ndarray) -> np.ndarray:
         return bgr_to_gray(img)
+    def process_gpu(self, img: np.ndarray) -> np.ndarray:
+        return ShaderEngine.instance().apply(_SHADER_RGB_GRAY, img, gray=True)
 
 
 class HSVSaturationFilter(ImageFilter):
     @classmethod
     def name(cls) -> str:
         return "HSV饱和度"
-    def process(self, img: np.ndarray) -> np.ndarray:
+    def process_cpu(self, img: np.ndarray) -> np.ndarray:
         return (bgr_hsv_s_channel(img) * 255).astype(np.uint8)
+    def process_gpu(self, img: np.ndarray) -> np.ndarray:
+        return ShaderEngine.instance().apply(_SHADER_HSV_SATURATION, img, gray=True)
 
 
 class HLSLightnessFilter(ImageFilter):
     @classmethod
     def name(cls) -> str:
         return "HLS亮度"
-    def process(self, img: np.ndarray) -> np.ndarray:
+    def process_cpu(self, img: np.ndarray) -> np.ndarray:
         return (bgr_hls_l_channel(img) * 255).astype(np.uint8)
+    def process_gpu(self, img: np.ndarray) -> np.ndarray:
+        return ShaderEngine.instance().apply(_SHADER_HLS_LIGHTNESS, img, gray=True)
 
 
 class EdgeDetectFilter(ImageFilter):
@@ -472,9 +699,15 @@ class EdgeDetectFilter(ImageFilter):
         return "边缘检测"
     def exposed_parameters(self) -> List:
         return self._params
-    def process(self, img: np.ndarray) -> np.ndarray:
+    def process_cpu(self, img: np.ndarray) -> np.ndarray:
         p = self._params[0]
         return edge_detect(bgr_to_gray(img), int(p.low), int(p.high))
+    def process_gpu(self, img: np.ndarray) -> np.ndarray:
+        p = self._params[0]
+        return ShaderEngine.instance().apply(_SHADER_EDGE_DETECT, img, {
+            "u_low": float(p.low),
+            "u_high": float(p.high),
+        }, gray=True)
 
 
 class DetailAnalyzeFilter(ImageFilter):
@@ -517,7 +750,7 @@ class DetailAnalyzeFilter(ImageFilter):
         result[..., 2] = (edge_u16 * np.uint16(r) // 255).astype(np.uint8)
         return result
 
-    def process(self, img: np.ndarray) -> np.ndarray:
+    def process_cpu(self, img: np.ndarray) -> np.ndarray:
         if not self._p_en_lab.value and not self._p_en_chroma.value:
             return np.zeros((img.shape[0], img.shape[1]), dtype=np.uint8)
 
@@ -550,21 +783,43 @@ class DetailAnalyzeFilter(ImageFilter):
         tinted_chroma = self._tint(e_chroma, r_chroma, g_chroma, b_chroma).astype(np.uint16)
         return (tinted_lab + tinted_chroma).clip(0, 255).astype(np.uint8)
 
+    def process_gpu(self, img: np.ndarray) -> np.ndarray:
+        if not self._p_en_lab.value and not self._p_en_chroma.value:
+            return np.zeros((img.shape[0], img.shape[1]), dtype=np.uint8)
+        r_lab, g_lab, b_lab = self._p_lab_color.value
+        r_chroma, g_chroma, b_chroma = self._p_chroma_color.value
+        return ShaderEngine.instance().apply(_SHADER_DETAIL_ANALYZE, img, {
+            "u_en_lab": 1.0 if self._p_en_lab.value else 0.0,
+            "u_en_chroma": 1.0 if self._p_en_chroma.value else 0.0,
+            "u_lab_low": float(self._p_lab_thresh.low),
+            "u_lab_high": float(self._p_lab_thresh.high),
+            "u_chroma_low": float(self._p_chroma_thresh.low),
+            "u_chroma_high": float(self._p_chroma_thresh.high),
+            "u_lab_weight": float(self._p_lab_weight.value),
+            "u_chroma_weight": float(self._p_chroma_weight.value),
+            "u_lab_color": (float(r_lab), float(g_lab), float(b_lab)),
+            "u_chroma_color": (float(r_chroma), float(g_chroma), float(b_chroma)),
+        })
+
 
 class InvertFilter(ImageFilter):
     @classmethod
     def name(cls) -> str:
         return "颜色反转"
-    def process(self, img: np.ndarray) -> np.ndarray:
+    def process_cpu(self, img: np.ndarray) -> np.ndarray:
         return invert(img)
+    def process_gpu(self, img: np.ndarray) -> np.ndarray:
+        return ShaderEngine.instance().apply(_SHADER_INVERT, img)
 
 
 class SepiaFilter(ImageFilter):
     @classmethod
     def name(cls) -> str:
         return "怀旧棕褐色"
-    def process(self, img: np.ndarray) -> np.ndarray:
+    def process_cpu(self, img: np.ndarray) -> np.ndarray:
         return sepia(img)
+    def process_gpu(self, img: np.ndarray) -> np.ndarray:
+        return ShaderEngine.instance().apply(_SHADER_SEPIA, img)
 
 
 class MultiplyFilter(ImageFilter):
@@ -580,13 +835,18 @@ class MultiplyFilter(ImageFilter):
         return "正片叠底"
     def exposed_parameters(self) -> List:
         return self._params
-    def process(self, img: np.ndarray) -> np.ndarray:
+    def process_cpu(self, img: np.ndarray) -> np.ndarray:
         r, g, b = self._params[0].value
         result = img.astype(np.uint16)
         result[..., 0] = result[..., 0] * b // 255
         result[..., 1] = result[..., 1] * g // 255
         result[..., 2] = result[..., 2] * r // 255
         return result.astype(np.uint8)
+    def process_gpu(self, img: np.ndarray) -> np.ndarray:
+        r, g, b = self._params[0].value
+        return ShaderEngine.instance().apply(_SHADER_MULTIPLY, img, {
+            "u_color": (float(r), float(g), float(b)),
+        })
 
 
 class RateOfChangeFilter(ImageFilter):
@@ -603,7 +863,7 @@ class RateOfChangeFilter(ImageFilter):
     def exposed_parameters(self):
         return self._params
 
-    def process(self, img: np.ndarray) -> np.ndarray:
+    def process_cpu(self, img: np.ndarray) -> np.ndarray:
         gray = bgr_to_gray(img)
         h, w = gray.shape
 
@@ -634,6 +894,16 @@ class RateOfChangeFilter(ImageFilter):
 
         stripe = np.sin(2 * np.pi * freq * proj_norm)
         return ((stripe + 1) * 127.5).clip(0, 255).astype(np.uint8)
+
+    def process_gpu(self, img: np.ndarray) -> np.ndarray:
+        min_freq = self._params[0].low
+        max_freq = self._params[0].high
+        angle = self._params[1].value
+        return ShaderEngine.instance().apply(_SHADER_RATE_OF_CHANGE, img, {
+            "u_min_freq": float(min_freq),
+            "u_max_freq": float(max_freq),
+            "u_angle": float(angle),
+        }, gray=True)
 
 
 # ============================================================

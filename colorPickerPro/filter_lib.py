@@ -2,7 +2,7 @@
 滤镜库：模块化设计，新增滤镜只需继承 ImageFilter
 =============================================
 包含：
-- 参数类型：FilterParam, RangeParam, BoolParam, ColorParam, TextParam, FileParam, Vec2Param
+- 参数类型：FilterParam, RangeParam, BoolParam, ColorParam, TextParam, FileParam, Vec2Param, InfoParam
 - 依赖系统：add_dependency()
 - 滤镜基类：ImageFilter (自动注册子类)
 - 处理接口：process 为统一调用入口，按存在性检测 process_cpu / process_gpu
@@ -616,6 +616,77 @@ class Vec2Param:
 
         sp_x.valueChanged.connect(sync)
         sp_y.valueChanged.connect(sync)
+
+        return container
+
+
+class InfoParam:
+    """描述一个回显信息参数（只读显示，无需输入），用于展示调试或验算信息。
+
+    程序可通过赋值 value 更新显示内容，用户可选中文本复制。
+    """
+
+    def __init__(self, name, description, text="", word_wrap=True):
+        self.name = name
+        self.description = description
+        self._text = str(text)
+        self.word_wrap = word_wrap
+        self._listeners = []
+        self._container = None
+        self._label = None
+        self._opacity_effect = None
+
+    @property
+    def value(self):
+        return self._text
+
+    @value.setter
+    def value(self, text):
+        self._text = str(text)
+        if self._label is not None:
+            self._label.setText(self._text)
+
+    def on_value_changed(self, cb):
+        self._listeners.append(cb)
+
+    def _notify_value_changed(self):
+        for cb in self._listeners:
+            cb()
+
+    def set_enabled(self, enabled):
+        if self._container:
+            if enabled:
+                if self._opacity_effect:
+                    self._container.setGraphicsEffect(None)
+                    self._opacity_effect = None
+            else:
+                if self._opacity_effect is None:
+                    self._opacity_effect = QGraphicsOpacityEffect()
+                    self._opacity_effect.setOpacity(0.35)
+                self._container.setGraphicsEffect(self._opacity_effect)
+            self._container.setEnabled(enabled)
+
+    def create_widget(self, on_changed):
+        container = QWidget()
+        self._container = container
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        lbl = QLabel(self.name)
+        lbl.setObjectName("paramName")
+        lbl.setFixedWidth(72)
+        lbl.setToolTip(self.description)
+        lbl.setAlignment(Qt.AlignTop)
+        row.addWidget(lbl)
+
+        value_lbl = QLabel(self._text)
+        value_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        value_lbl.setWordWrap(self.word_wrap)
+        value_lbl.setStyleSheet("QLabel { color: #4fc3f7; font-size: 11px; background: #333;"
+                                " border: 1px solid #555; border-radius: 3px; padding: 2px 4px; }")
+        row.addWidget(value_lbl, 1)
+        self._label = value_lbl
 
         return container
 

@@ -24,6 +24,7 @@ from PySide6.QtCore import QThread, Signal
 
 from .udm_brush_link import UDMSync
 from .photoshop_color_sync import PhotoshopSync
+from .window_focus import WindowFocusReturner
 
 
 def _close(a: tuple | None, b: tuple | None, tol: int = 2) -> bool:
@@ -50,6 +51,8 @@ class SyncController(QThread):
 
         self.udm = UDMSync()
         self.ps = PhotoshopSync()
+        # GUI-thread only: hands the window focus back to the synced app.
+        self._focus = WindowFocusReturner()
 
         self._last_written: tuple | None = None
         self._last_observed: tuple | None = None
@@ -81,6 +84,44 @@ class SyncController(QThread):
         if not self.wait(timeout_ms):
             self.terminate()
             self.wait(500)
+
+    # ----- focus hand-back (GUI thread) -----------------------------------
+    def sync_target(self) -> tuple[int | None, tuple[str, ...]] | None:
+        """``(pid, process names)`` of the sync target, None while inactive.
+
+        The pid comes from the live backend; the process names are the
+        fallback used when the backend has not attached yet (the app is
+        running but the colour bridge is still connecting).
+        """
+        with self._lock:
+            mode = self._mode
+            enabled = self._enabled
+        if mode == "off" or not enabled:
+            return None
+        backend = self.udm if mode == "udm" else self.ps
+        try:
+            pid = backend.target_pid
+        except Exception:
+            pid = None
+        try:
+            names = tuple(backend.focus_process_names())
+        except Exception:
+            names = ()
+        if not pid and not names:
+            return None
+        return pid, names
+
+    def return_focus(self) -> bool:
+        """Give the window focus back to the app being synced with."""
+        target = self.sync_target()
+        if target is None:
+            return False
+        pid, names = target
+        try:
+            return self._focus.focus(pid=pid, process_names=names)
+        except Exception as exc:
+            print(f"[Sync] focus return failed: {exc!r}", flush=True)
+            return False
 
     # ----- worker thread ---------------------------------------------------
     def run(self) -> None:

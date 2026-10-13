@@ -3,9 +3,10 @@ import sys
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QFrame, QPushButton, QComboBox, QMenu
+    QLabel, QFrame, QPushButton, QComboBox, QMenu, QCheckBox, QSizePolicy,
+    QAbstractSpinBox, QLineEdit, QTextEdit, QPlainTextEdit,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QEvent
 
 from .screenPicker import ScreenPicker
 from .filter_lib import ImageFilter
@@ -19,6 +20,12 @@ from .color_picker_widgets import (
     GraphicalPicker, DynamicSlidersWidget, ColorInfoPanel,
 )
 from .sync.controller import SyncController
+
+
+# 正在输入数值/文本的控件：此时归还焦点会打断输入，需要等编辑结束。
+_TEXT_EDIT_WIDGETS = (
+    QAbstractSpinBox, QLineEdit, QTextEdit, QPlainTextEdit,
+)
 
 
 class MainWindow(QMainWindow):
@@ -38,6 +45,13 @@ class MainWindow(QMainWindow):
         self._sync.messageChanged.connect(self._on_sync_message)
         self._sync_mode = "off"
         self._sync_enabled = False
+
+        # 选色后归还焦点：勾选框状态 + 交互状态机
+        self._focus_return_enabled = True
+        self._focus_pending = False     # 本次选色还没归还焦点
+        self._mouse_down = False        # 鼠标按下中（拖拽选色未结束）
+        self._edit_dirty = False        # 正在键入数值
+        self._last_pushed_rgb = None    # 上次同步出去的 RGB
 
         self._screen_picker = ScreenPicker()
 
@@ -139,6 +153,11 @@ class MainWindow(QMainWindow):
         self._desc_label.setText(self._model.description)
         self._sync.start()
 
+        # 全局事件过滤：跟踪鼠标按键与键入状态，用于判断"选色交互"是否结束。
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+
     def _build_sync_row(self, layout):
         row = QHBoxLayout()
         lbl = QLabel("🎨 颜色同步")
@@ -165,8 +184,22 @@ class MainWindow(QMainWindow):
         self._sync_btn.clicked.connect(self._on_sync_toggle)
         row.addWidget(self._sync_btn)
 
+        self._focus_chk = QCheckBox("归还焦点")
+        self._focus_chk.setToolTip(
+            "开启同步后，每次选色操作结束时自动把窗口焦点归还给同步软件"
+            "（例如 CSP）；正在拖拽或输入数值时不会打断。")
+        self._focus_chk.setStyleSheet("font-size: 10px;")
+        self._focus_chk.setChecked(True)
+        self._focus_chk.setEnabled(False)
+        self._focus_chk.toggled.connect(self._on_focus_return_toggled)
+        row.addWidget(self._focus_chk)
+
         self._sync_status = QLabel("未同步")
         self._sync_status.setStyleSheet("font-size: 10px; color: #888;")
+        # 状态文字最不关键：窗口被拖窄时优先压缩它，别挤掉勾选框。
+        self._sync_status.setSizePolicy(
+            QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self._sync_status.setMinimumWidth(0)
         row.addWidget(self._sync_status, 1)
         layout.addLayout(row)
 
@@ -247,6 +280,10 @@ class MainWindow(QMainWindow):
 
     def _on_picked(self, r, g, b):
         self._model.set_from_srgb(r / 255.0, g / 255.0, b / 255.0)
+        # 屏幕取色的那次点击发生在取色器覆盖层里，覆盖层随即隐藏，松键事件
+        # 不会再回到本进程，所以这里直接结束"鼠标按下"状态并归还焦点。
+        self._mouse_down = False
+        self._try_return_focus()
 
     # ----- color sync ------------------------------------------------------
     def _on_sync_mode_change(self, index):
@@ -254,8 +291,10 @@ class MainWindow(QMainWindow):
         active = self._sync_mode != "off"
         self._sync.set_mode(self._sync_mode)
         self._sync_btn.setEnabled(active)
+        self._focus_chk.setEnabled(active)
         if not active:
             self._sync_enabled = False
+            self._sync_pending_off()
             self._sync.set_enabled(False)
             self._sync_btn.setText("开启同步")
             self._sync_status.setText("未同步")
@@ -265,8 +304,15 @@ class MainWindow(QMainWindow):
         self._sync.set_enabled(self._sync_enabled)
         self._sync_btn.setText("关闭同步" if self._sync_enabled else "开启同步")
         if self._sync_enabled:
+            self._last_pushed_rgb = None   # 开启后第一次选色一定归还
             self._push_sync_color()
             self._sync_status.setText("连接中…")
+        else:
+            self._sync_pending_off()
+
+    def _sync_pending_off(self):
+        self._focus_pending = False
+        self._last_pushed_rgb = None
 
     def _push_sync_color(self):
         if not (self._sync_enabled and self._sync_mode != "off"):
@@ -279,6 +325,7 @@ class MainWindow(QMainWindow):
         if self._applying_ext:
             return
         self._push_sync_color()
+        self._maybe_return_focus()
 
     def _on_sync_external(self, r, g, b):
         self._applying_ext = True
@@ -286,6 +333,72 @@ class MainWindow(QMainWindow):
             self._model.set_from_srgb(r / 255.0, g / 255.0, b / 255.0)
         finally:
             self._applying_ext = False
+        # 记下同步软件那边的颜色，这样用户之后在 pixnex 里再选回同一个
+        # 颜色时，仍然算"颜色变了"，照样归还焦点。
+        self._last_pushed_rgb = (r, g, b)
+
+    # ----- focus hand-back -------------------------------------------------
+    # 规则：只有"因用户交互而改变颜色"才归还焦点（同步软件改色不算），且
+    # 拖拽尚未结束或正在键入数值时不打断；这两件事一结束立即归还。
+    def _focus_return_active(self):
+        return (self._focus_return_enabled and self._sync_enabled
+                and self._sync_mode != "off")
+
+    def _on_focus_return_toggled(self, checked):
+        self._focus_return_enabled = bool(checked)
+        if not checked:
+            self._focus_pending = False
+
+    def _maybe_return_focus(self):
+        if not self._focus_return_active():
+            return
+        r, g, b = self._model.to_srgb_tuple()
+        rgb = (round(r * 255), round(g * 255), round(b * 255))
+        if rgb == self._last_pushed_rgb:
+            return  # 颜色没变（例如切换色彩模型），不算一次选色
+        self._last_pushed_rgb = rgb
+        self._focus_pending = True
+        self._try_return_focus()
+
+    def _try_return_focus(self):
+        if not self._focus_pending:
+            return
+        if not self._focus_return_active():
+            self._focus_pending = False
+            return
+        if self._mouse_down:
+            return  # 还在拖拽，松手时再归还
+        if self._edit_dirty and self._is_text_editing():
+            return  # 还在键入数值，回车或点到别处时再归还
+        self._focus_pending = False
+        self._sync.return_focus()
+
+    @staticmethod
+    def _is_text_editing():
+        widget = QApplication.focusWidget()
+        while widget is not None:
+            if isinstance(widget, _TEXT_EDIT_WIDGETS):
+                return True
+            widget = widget.parentWidget()
+        return False
+
+    def eventFilter(self, obj, event):
+        etype = event.type()
+        if etype == QEvent.MouseButtonPress:
+            self._mouse_down = True
+            self._edit_dirty = False
+        elif etype == QEvent.MouseButtonRelease:
+            self._mouse_down = False
+            self._try_return_focus()
+        elif etype == QEvent.KeyPress:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                self._edit_dirty = False
+                self._try_return_focus()
+            elif self._is_text_editing():
+                self._edit_dirty = True
+        elif etype in (QEvent.WindowDeactivate, QEvent.UngrabMouse):
+            self._mouse_down = False
+        return super().eventFilter(obj, event)
 
     def _on_sync_status(self, mode, connected):
         if mode != self._sync_mode:

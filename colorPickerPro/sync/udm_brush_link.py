@@ -64,6 +64,8 @@ _PROFILES: tuple[_UDMBuildProfile, ...] = (
     _UDMBuildProfile("udm4.0-ex", "UDMPaintEX.exe", 0x04CD03B0),
 )
 _PROFILE_INDEX: dict[str, _UDMBuildProfile] = {p.key: p for p in _PROFILES}
+# Both builds can host the window we hand the focus back to.
+_PROCESS_NAMES: tuple[str, ...] = tuple(p.process_name for p in _PROFILES)
 
 
 def _normalize_version_key(raw: object) -> str:
@@ -353,6 +355,15 @@ class UDMSync:
             return False
 
     # ----- introspection --------------------------------------------------
+    @property
+    def target_pid(self) -> int | None:
+        """PID of the attached UDM process (None while not attached)."""
+        return self.pid if self.pm is not None else None
+
+    def focus_process_names(self) -> tuple[str, ...]:
+        """Executables that may host the UDM window."""
+        return _PROCESS_NAMES
+
     def status(self) -> dict[str, object]:
         if self.pm is None:
             self.connect()

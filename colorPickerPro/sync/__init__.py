@@ -6,7 +6,8 @@ pixnex PySide6 codebase.  The package exposes:
 * ``UDMSync`` — pymem-based memory sync for UDM Paint (``udm_brush_link``)
 * ``PhotoshopSync`` — COM automation + green-edition script bridge
 * ``SyncController`` — a QThread that polls the active backend and keeps
-  the picker color in sync with the target application.
+  the picker color in sync with the target application; it also owns the
+  window-focus hand-back back to that application (``window_focus``).
 """
 
 from .brush_color_spaces import (
@@ -25,6 +26,12 @@ from .photoshop_instances import (
 from .photoshop_script_bridge import PhotoshopScriptBridge
 from .photoshop_color_sync import PhotoshopSync
 from .controller import SyncController
+from .window_focus import (
+    WindowFocusReturner,
+    WindowInfo,
+    pick_main_window,
+    pids_for_process_names,
+)
 
 __all__ = [
     "SPACE_ORDER",
@@ -39,4 +46,8 @@ __all__ = [
     "PhotoshopScriptBridge",
     "PhotoshopSync",
     "SyncController",
+    "WindowFocusReturner",
+    "WindowInfo",
+    "pick_main_window",
+    "pids_for_process_names",
 ]

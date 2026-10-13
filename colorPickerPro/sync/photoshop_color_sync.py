@@ -363,6 +363,15 @@ class PhotoshopSync:
             return False
 
     # -- status / meta -----------------------------------------------------------
+    @property
+    def target_pid(self) -> int | None:
+        """PID of the Photoshop instance we talk to (None when detached)."""
+        return self._pid
+
+    def focus_process_names(self) -> tuple[str, ...]:
+        """Executable that may host the Photoshop window."""
+        return (PROCESS_NAME,)
+
     def status(self) -> dict[str, object]:
         if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
             connected = (self._bridge.is_deployed()

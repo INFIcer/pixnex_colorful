@@ -22,7 +22,7 @@ from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QLabel, QPushButton,
     QVBoxLayout, QListWidget, QListWidgetItem,
-    QGroupBox, QMessageBox, QDialog, QMenu, QFileDialog,
+    QGroupBox, QMessageBox, QDialog, QMenu, QFileDialog, QLineEdit,
 )
 if __name__ == "__main__" and (__package__ is None or __package__ == ''):
     from pathlib import Path
@@ -39,13 +39,18 @@ else:
 # ============================================================
 
 class _FilterParamsPanel(QDialog):
-    """滤镜参数调节面板（弹出式）"""
+    """滤镜参数调节面板（弹出式）
+
+    注意：不能使用 Qt.Popup，Windows 上 Popup 窗口不会被激活，
+    输入法（TSF/IME）只挂接到激活窗口，导致 QLineEdit 无法输入中文。
+    使用 Qt.Tool 使面板成为可激活的顶层工具窗口。
+    """
 
     def __init__(self, params, on_changed, parent=None):
         super().__init__(parent)
         self._on_changed = on_changed
 
-        self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, False)
         self.setStyleSheet("""
             _FilterParamsPanel { background-color: #2a2a2a; border: 1px solid #555; }
@@ -71,6 +76,13 @@ class _FilterParamsPanel(QDialog):
             layout.addWidget(p.create_widget(self._on_changed))
 
         self.setFixedWidth(360)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.activateWindow()
+        edit = self.findChild(QLineEdit)
+        if edit is not None:
+            edit.setFocus()
 
 
 class ScreenFilterWindow(CustomFramelessWindow):

@@ -175,6 +175,9 @@ class FilterImageViewer(QWidget):
         try:
             img_np = ImageConvert.pixmap_to_numpy(self._input_pixmap)
             result = self._filter.process(img_np)
+            alpha = ImageConvert.alpha_from_pixmap(self._input_pixmap)
+            if (alpha < 255).any() and len(result.shape) == 3 and result.shape[2] == 3:
+                result = ImageConvert.apply_alpha(result, alpha)
             result_pm = ImageConvert.numpy_to_pixmap(result)
             self._viewer.set_content(result_pm)
         except Exception as ex:

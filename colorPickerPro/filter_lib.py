@@ -1223,6 +1223,194 @@ class RateOfChangeFilter(ImageFilter):
 
 
 # ============================================================
+# 盲水印滤镜（基于 blind_watermark）
+# ============================================================
+
+def _wm_str_to_bit(text):
+    """将文字转为盲水印 bit 序列（与 blind_watermark.read_wm 的 str 模式一致）。"""
+    byte = bin(int(text.encode('utf-8').hex(), base=16))[2:]
+    return (np.array(list(byte)) == '1')
+
+
+def _wm_core_read_array(core, img):
+    """用 numpy BGR 数组初始化 WaterMarkCore，等价于 read_img(filename) 但免去文件 IO。"""
+    import cv2
+    from pywt import dwt2
+
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    elif img.shape[2] == 4:
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+
+    img = img.astype(np.float32)
+    core.img = img
+    core.img_shape = img.shape[:2]
+    core.img_YUV = cv2.copyMakeBorder(
+        cv2.cvtColor(img, cv2.COLOR_BGR2YUV),
+        0, img.shape[0] % 2, 0, img.shape[1] % 2,
+        cv2.BORDER_CONSTANT, value=(0, 0, 0))
+    core.ca_shape = [(i + 1) // 2 for i in core.img_shape]
+    core.ca_block_shape = (core.ca_shape[0] // core.block_shape[0],
+                           core.ca_shape[1] // core.block_shape[1],
+                           core.block_shape[0], core.block_shape[1])
+    strides = 4 * np.array([core.ca_shape[1] * core.block_shape[0],
+                            core.block_shape[1], core.ca_shape[1], 1])
+    for channel in range(3):
+        core.ca[channel], core.hvd[channel] = dwt2(core.img_YUV[:, :, channel], 'haar')
+        core.ca_block[channel] = np.lib.stride_tricks.as_strided(
+            core.ca[channel].astype(np.float32), core.ca_block_shape, strides)
+
+
+def _wm_block_num(img):
+    """计算整幅图可嵌入水印的 block 数量（即容量，单位 bit）。"""
+    h, w = img.shape[:2]
+    return ((h + 1) // 2 // 4) * ((w + 1) // 2 // 4)
+
+
+def _wm_embed_text(img, text, password_wm, password_img):
+    """在 BGR 图像中嵌入文字盲水印，返回嵌入后的 BGR 数组（不写文件）。"""
+    import copy
+    import cv2
+    from pywt import idwt2
+    from .blind_watermark import WaterMark
+    from .blind_watermark.bwm_core import random_strategy1
+
+    wm_bit = _wm_str_to_bit(text)
+    wm = WaterMark(password_wm=password_wm, password_img=password_img)
+    core = wm.bwm_core
+    _wm_core_read_array(core, img)
+
+    wm_bit = wm_bit.copy()
+    np.random.RandomState(password_wm).shuffle(wm_bit)
+    core.read_wm(wm_bit)
+    core.init_block_index()
+
+    embed_ca = copy.deepcopy(core.ca)
+    embed_YUV = [np.array([])] * 3
+
+    core.idx_shuffle = random_strategy1(core.password_img, core.block_num,
+                                        core.block_shape[0] * core.block_shape[1])
+    for channel in range(3):
+        tmp = core.pool.map(core.block_add_wm,
+                            [(core.ca_block[channel][core.block_index[i]], core.idx_shuffle[i], i)
+                             for i in range(core.block_num)])
+        for i in range(core.block_num):
+            core.ca_block[channel][core.block_index[i]] = tmp[i]
+        core.ca_part[channel] = np.concatenate(np.concatenate(core.ca_block[channel], 1), 1)
+        embed_ca[channel][:core.part_shape[0], :core.part_shape[1]] = core.ca_part[channel]
+        embed_YUV[channel] = idwt2((embed_ca[channel], core.hvd[channel]), "haar")
+
+    embed_img_YUV = np.stack(embed_YUV, axis=2)
+    embed_img_YUV = embed_img_YUV[:core.img_shape[0], :core.img_shape[1]]
+    embed_img = cv2.cvtColor(embed_img_YUV, cv2.COLOR_YUV2BGR)
+    return np.clip(embed_img, 0, 255).astype(np.uint8)
+
+
+def _wm_extract_text(img, wm_size, password_wm, password_img):
+    """从 BGR 图像中提取 wm_size 比特的文字盲水印并还原为字符串。"""
+    from .blind_watermark import WaterMark
+    from .blind_watermark.bwm_core import random_strategy1, one_dim_kmeans
+
+    wm = WaterMark(password_wm=password_wm, password_img=password_img)
+    core = wm.bwm_core
+    _wm_core_read_array(core, img)
+    core.init_block_index()
+
+    wm_block_bit = np.zeros(shape=(3, core.block_num))
+    core.idx_shuffle = random_strategy1(password_img, core.block_num,
+                                        core.block_shape[0] * core.block_shape[1])
+    for channel in range(3):
+        wm_block_bit[channel, :] = core.pool.map(
+            core.block_get_wm,
+            [(core.ca_block[channel][core.block_index[i]], core.idx_shuffle[i])
+             for i in range(core.block_num)])
+
+    wm_avg = np.zeros(shape=wm_size)
+    for i in range(wm_size):
+        wm_avg[i] = wm_block_bit[:, i::wm_size].mean()
+    wm_avg = one_dim_kmeans(wm_avg)
+
+    wm_index = np.arange(wm_size)
+    np.random.RandomState(password_wm).shuffle(wm_index)
+    wm_avg[wm_index] = wm_avg.copy()
+
+    byte = ''.join((np.round(wm_avg)).astype(int).astype(str))
+    return bytes.fromhex(hex(int(byte, base=2))[2:]).decode('utf-8')
+
+
+class TextWatermarkEmbedFilter(ImageFilter):
+    """插入文字水印：将文字以盲水印形式嵌入图像，肉眼不可见。"""
+
+    def __init__(self):
+        self._p_text = TextParam("水印文本", "要嵌入图像的文字内容（支持中文）", "")
+        self._p_wm_pwd = FilterParam("水印密码", "水印加密密码，验证时必须一致", 0, 999999, 1, 1)
+        self._p_img_pwd = FilterParam("图片密码", "图像加密密码，验证时必须一致", 0, 999999, 1, 1)
+        self._p_info = InfoParam("嵌入信息", "嵌入结果回显")
+        self._params = [self._p_text, self._p_wm_pwd, self._p_img_pwd, self._p_info]
+
+    @classmethod
+    def name(cls) -> str:
+        return "插入文字水印"
+
+    def exposed_parameters(self) -> List:
+        return self._params
+
+    def process_cpu(self, img: np.ndarray) -> np.ndarray:
+        text = self._p_text.value.strip()
+        if not text:
+            self._p_info.value = "请先输入水印文本"
+            return img.copy()
+        password_wm = int(self._p_wm_pwd.value)
+        password_img = int(self._p_img_pwd.value)
+        try:
+            result = _wm_embed_text(img, text, password_wm, password_img)
+            bit_len = int(_wm_str_to_bit(text).size)
+            capacity = int(_wm_block_num(result))
+            self._p_info.value = f"嵌入成功：{bit_len} bits / 容量 {capacity} bits"
+            return result
+        except IndexError as ex:
+            self._p_info.value = f"嵌入失败：{ex}"
+            return img.copy()
+        except Exception as ex:
+            self._p_info.value = f"嵌入失败：{ex}"
+            return img.copy()
+
+
+class TextWatermarkVerifyFilter(ImageFilter):
+    """验证文字水印：从图像中提取文字盲水印，提取结果通过参数回显。"""
+
+    def __init__(self):
+        self._p_size = FilterParam("水印长度(bit)", "嵌入水印的比特数，需与嵌入时一致（见插入滤镜回显的嵌入比特数）", 1, 100000, 100, 1)
+        self._p_wm_pwd = FilterParam("水印密码", "水印加密密码，与嵌入时一致", 0, 999999, 1, 1)
+        self._p_img_pwd = FilterParam("图片密码", "图像加密密码，与嵌入时一致", 0, 999999, 1, 1)
+        self._p_info = InfoParam("提取结果", "从图像中提取到的文字水印内容回显")
+        self._params = [self._p_size, self._p_wm_pwd, self._p_img_pwd, self._p_info]
+
+    @classmethod
+    def name(cls) -> str:
+        return "验证文字水印"
+
+    def exposed_parameters(self) -> List:
+        return self._params
+
+    def process_cpu(self, img: np.ndarray) -> np.ndarray:
+        wm_size = int(self._p_size.value)
+        capacity = int(_wm_block_num(img))
+        if wm_size >= capacity:
+            self._p_info.value = f"水印长度超过图像容量（{capacity} bits）"
+            return img.copy()
+        password_wm = int(self._p_wm_pwd.value)
+        password_img = int(self._p_img_pwd.value)
+        try:
+            extracted = _wm_extract_text(img, wm_size, password_wm, password_img)
+        except Exception as ex:
+            self._p_info.value = f"提取失败：{ex}"
+            return img.copy()
+        self._p_info.value = f"提取结果：{extracted}"
+        return img.copy()
+
+
+# ============================================================
 # 图像转换工具
 # ============================================================
 
@@ -1233,6 +1421,9 @@ class ImageConvert:
         if len(img.shape) == 2:
             h, w = img.shape
             qi = QImage(img.data, w, h, w, QImage.Format_Grayscale8)
+        elif img.shape[2] == 4:
+            h, w, ch = img.shape
+            qi = QImage(img.data, w, h, ch * w, QImage.Format_ARGB32)
         else:
             h, w, ch = img.shape
             qi = QImage(img.data, w, h, ch * w, QImage.Format_BGR888)
@@ -1248,6 +1439,29 @@ class ImageConvert:
             ptr.setsize(qi.sizeInBytes())
         arr = np.frombuffer(ptr, dtype=np.uint8).reshape(qi.height(), qi.width(), 4)
         return bgra_to_bgr(arr)
+
+    @staticmethod
+    def alpha_from_pixmap(pm: QPixmap) -> np.ndarray:
+        """提取 QPixmap 的 alpha 通道，返回 (H,W) uint8。"""
+        qi = pm.toImage()
+        if qi.format() != QImage.Format_ARGB32:
+            qi = qi.convertToFormat(QImage.Format_ARGB32)
+        ptr = qi.constBits()
+        if hasattr(ptr, 'setsize'):
+            ptr.setsize(qi.sizeInBytes())
+        arr = np.frombuffer(ptr, dtype=np.uint8).reshape(qi.height(), qi.width(), 4)
+        return arr[..., 3].copy()
+
+    @staticmethod
+    def apply_alpha(bgr: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+        """把 alpha 通道合成到 BGR 图像上，返回 BGRA (H,W,4) uint8。"""
+        h, w = alpha.shape
+        out = np.empty((h, w, 4), dtype=np.uint8)
+        out[..., 0] = bgr[..., 0]
+        out[..., 1] = bgr[..., 1]
+        out[..., 2] = bgr[..., 2]
+        out[..., 3] = alpha
+        return out
 
 
 # ============================================================

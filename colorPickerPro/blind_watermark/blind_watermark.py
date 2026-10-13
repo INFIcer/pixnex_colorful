@@ -69,7 +69,7 @@ class WaterMark:
         if mode == 'img':
             cv2.imwrite(out_wm_name, 255 * wm.reshape(wm_shape[0], wm_shape[1]))
         elif mode == 'str':
-            byte = ''.join((np.round(wm)).astype(np.int).astype(np.str))
+            byte = ''.join((np.round(wm)).astype(int).astype(str))
             wm = bytes.fromhex(hex(int(byte, base=2))[2:]).decode('utf-8')
 
         return wm

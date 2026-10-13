@@ -3,16 +3,15 @@ import sys
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QFrame, QPushButton, QComboBox, QMenu, QCheckBox, QSizePolicy,
-    QAbstractSpinBox, QLineEdit, QTextEdit, QPlainTextEdit,
+    QLabel, QFrame, QPushButton, QComboBox, QCheckBox, QSizePolicy,
+    QAbstractSpinBox, QLineEdit, QTextEdit, QPlainTextEdit, QDialog,
 )
 from PySide6.QtCore import Qt, QEvent
 
 from .screenPicker import ScreenPicker
-from .filter_lib import ImageFilter
 from .screenFilter import ScreenFilterWindow
 from .image_drop_widget import ImageDropWidget
-from .list_selection_dialog import ListSelectionDialog
+from .filter_scheme_selector import FilterSchemeSelectorDialog
 from .image_filter_compare import ImageFilterCompareWindow
 from .color_picker_widgets import (
     OKLCHModel, HSVModel, CIELCHModel, CIELabModel, HSIModel,
@@ -122,6 +121,7 @@ class MainWindow(QMainWindow):
         filter_btn_layout.addStretch()
 
         self._screen_filter_btn = QPushButton("🎨 屏幕滤镜")
+        self._screen_filter_btn.setToolTip("选择滤镜或已保存的滤镜方案，创建置顶滤镜窗口")
         self._screen_filter_btn.setStyleSheet("""
             QPushButton { padding: 6px 16px; font-size: 12px;
                 background-color: #7B1FA2; color: white;
@@ -130,12 +130,7 @@ class MainWindow(QMainWindow):
             QPushButton:pressed { background-color: #4A148C; }
         """)
         self._screen_filter_btn.setCursor(Qt.PointingHandCursor)
-
-        self._filter_menu = QMenu(self)
-        for cls in ImageFilter.all_filters():
-            action = self._filter_menu.addAction(cls.name())
-            action.triggered.connect(lambda checked, c=cls: self._create_screen_filter(c))
-        self._screen_filter_btn.setMenu(self._filter_menu)
+        self._screen_filter_btn.clicked.connect(self._on_pick_screen_filter)
 
         filter_btn_layout.addWidget(self._screen_filter_btn)
 
@@ -203,9 +198,18 @@ class MainWindow(QMainWindow):
         row.addWidget(self._sync_status, 1)
         layout.addLayout(row)
 
-    def _create_screen_filter(self, filter_cls):
-        fi = filter_cls()
-        win = ScreenFilterWindow(fi)
+    def _on_pick_screen_filter(self):
+        """选择滤镜或已保存方案，然后创建只承载该方案的屏幕滤镜窗口。"""
+        dlg = FilterSchemeSelectorDialog(self, "选择屏幕滤镜 / 滤镜方案")
+        if dlg.exec() != QDialog.Accepted:
+            return
+        scheme = dlg.current_scheme()
+        if scheme is None:
+            return
+        self._create_screen_filter(scheme)
+
+    def _create_screen_filter(self, scheme):
+        win = ScreenFilterWindow(scheme)
         off = 30 * (len(self._filter_windows) % 8)
         win.move(100 + off, 100 + off)
         win.start()
@@ -217,21 +221,16 @@ class MainWindow(QMainWindow):
             self._filter_windows.remove(win)
 
     def _on_drop_image(self, pixmap, filename):
-        all_filters = ImageFilter.all_filters()
-        names = [cls.name() for cls in all_filters]
-        dlg = ListSelectionDialog(
-            self, "选择对比滤镜", names,
-            selection_mode="multiple", checked_indices=[]
-        )
-        if dlg.exec() == ListSelectionDialog.Accepted:
-            indices = dlg.get_selected_indices()
-            if not indices:
-                return
-            selected_names = [names[i] for i in indices]
-            win = ImageFilterCompareWindow(pixmap, selected_names)
-            win.show()
-            self._compare_windows.append(win)
-            win.destroyed.connect(lambda w=win: self._compare_windows.remove(w) if w in self._compare_windows else None)
+        dlg = FilterSchemeSelectorDialog(self, "选择对比滤镜 / 方案", multi_select=True)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        schemes = dlg.selected_schemes()
+        if not schemes:
+            return
+        win = ImageFilterCompareWindow(pixmap, schemes)
+        win.show()
+        self._compare_windows.append(win)
+        win.destroyed.connect(lambda w=win: self._compare_windows.remove(w) if w in self._compare_windows else None)
 
     def closeEvent(self, e):
         for win in self._filter_windows[:]:

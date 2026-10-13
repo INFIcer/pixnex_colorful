@@ -9,7 +9,7 @@ set PYINST=".venv\Scripts\pyinstaller.exe"
 set SPEC="pixnex.spec"
 
 echo ========================================
-echo  pixnex - PyInstaller --onefile Build
+echo  pixnex - PyInstaller onedir Build
 echo ========================================
 echo.
 
@@ -37,19 +37,19 @@ if %errorlevel% neq 0 (
 )
 
 echo [3/3] Verifying output...
-if exist "dist\pixnex.exe" (
-    for %%I in ("dist\pixnex.exe") do set "size=%%~zI"
-    call echo   OK - dist\pixnex.exe  (%%size%% bytes)
+if exist "dist\pixnex\pixnex.exe" (
+    for %%I in ("dist\pixnex\pixnex.exe") do set "size=%%~zI"
+    call echo   OK - dist\pixnex\pixnex.exe  (%%size%% bytes)
 ) else (
-    echo [FAIL] dist\pixnex.exe not found
+    echo [FAIL] dist\pixnex\pixnex.exe not found
     pause & exit /b 1
 )
 
 echo ========================================
 echo  Build Complete!
-echo  Output: dist\pixnex.exe
+echo  Output: dist\pixnex\pixnex.exe
+echo  NOTE: 分发时请整个 dist\pixnex 文件夹一起拷贝
 echo ========================================
 echo.
-
 popd
 pause

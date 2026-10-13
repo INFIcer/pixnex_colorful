@@ -291,10 +291,45 @@ class ColorParam:
         self._listeners = []
         self._container = None
         self._opacity_effect = None
+        self._swatch = None
+        self._hex_edit = None
 
     @property
     def value(self):
         return (self._r, self._g, self._b)
+
+    @value.setter
+    def value(self, rgb):
+        """以 (r, g, b) 赋值（用于反序列化方案时恢复参数）。"""
+        r, g, b = rgb
+        self._r = int(np.clip(r, 0, 255))
+        self._g = int(np.clip(g, 0, 255))
+        self._b = int(np.clip(b, 0, 255))
+        if self._container is not None:
+            self._refresh_widget()
+
+    def _refresh_widget(self):
+        """按当前颜色刷新已创建的控件（若存在）。"""
+        if self._container is None:
+            return
+        try:
+            if self._swatch is not None:
+                self._swatch.setStyleSheet(
+                    self._swatch_style(self._r, self._g, self._b))
+            if self._hex_edit is not None:
+                self._hex_edit.blockSignals(True)
+                self._hex_edit.setText(f"#{self._r:02X}{self._g:02X}{self._b:02X}")
+                self._hex_edit.blockSignals(False)
+        except RuntimeError:
+            self._container = None
+            self._swatch = None
+            self._hex_edit = None
+
+    @staticmethod
+    def _swatch_style(r, g, b):
+        return (f"QPushButton {{ background-color: rgb({r},{g},{b});"
+                " border: 1px solid #666; border-radius: 2px; }"
+                "QPushButton:hover { border: 1px solid #aaa; }")
 
     def on_value_changed(self, cb):
         self._listeners.append(cb)
@@ -332,11 +367,8 @@ class ColorParam:
         swatch = QPushButton()
         swatch.setFixedSize(22, 22)
         swatch.setCursor(Qt.PointingHandCursor)
-        swatch.setStyleSheet(f"""
-            QPushButton {{ background-color: rgb({self._r},{self._g},{self._b});
-                border: 1px solid #666; border-radius: 2px; }}
-            QPushButton:hover {{ border: 1px solid #aaa; }}
-        """)
+        swatch.setStyleSheet(self._swatch_style(self._r, self._g, self._b))
+        self._swatch = swatch
 
         hex_edit = QLineEdit()
         hex_edit.setMaxLength(7)
@@ -344,14 +376,11 @@ class ColorParam:
         hex_edit.setFixedWidth(64)
         hex_edit.setPlaceholderText("#RRGGBB")
         hex_edit.setStyleSheet("QLineEdit { background: #3a3a3a; color: white; border: 1px solid #555; border-radius: 3px; padding: 1px 4px; font-size: 11px; }")
+        self._hex_edit = hex_edit
 
         def sync(r, g, b):
             self._r, self._g, self._b = r, g, b
-            swatch.setStyleSheet(f"""
-                QPushButton {{ background-color: rgb({r},{g},{b});
-                    border: 1px solid #666; border-radius: 2px; }}
-                QPushButton:hover {{ border: 1px solid #aaa; }}
-            """)
+            swatch.setStyleSheet(self._swatch_style(r, g, b))
             hex_edit.blockSignals(True); hex_edit.setText(f"#{r:02X}{g:02X}{b:02X}"); hex_edit.blockSignals(False)
             self._notify_value_changed()
             on_changed()

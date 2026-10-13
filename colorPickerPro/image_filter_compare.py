@@ -1,6 +1,6 @@
 import sys
 from functools import partial
-from PySide6.QtWidgets import QWidget, QVBoxLayout
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QDialog
 from PySide6.QtGui import QPixmap
 
 if __name__ == "__main__" and (__package__ is None or __package__ == ''):
@@ -8,15 +8,35 @@ if __name__ == "__main__" and (__package__ is None or __package__ == ''):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from colorPickerPro.list_viewer import ListViewer
     from colorPickerPro.filter_image_viewer import FilterImageViewer
+    from colorPickerPro.filter_lib import ImageFilter
+    from colorPickerPro.filter_scheme import FilterScheme, filter_class_by_name
+    from colorPickerPro.filter_scheme_selector import FilterSchemeSelectorDialog
     from colorPickerPro.image_viewer import ViewTransform
 else:
     from .list_viewer import ListViewer
     from .filter_image_viewer import FilterImageViewer
+    from .filter_lib import ImageFilter
+    from .filter_scheme import FilterScheme, filter_class_by_name
+    from .filter_scheme_selector import FilterSchemeSelectorDialog
     from .image_viewer import ViewTransform
 
 
+def to_scheme_item(item):
+    """把方案 / 滤镜实例 / 滤镜类 / 滤镜名统一转成 FilterScheme。"""
+    if isinstance(item, FilterScheme):
+        return item
+    if isinstance(item, ImageFilter):
+        return FilterScheme.from_filter(item)
+    if isinstance(item, type) and issubclass(item, ImageFilter):
+        return FilterScheme.single(item)
+    if isinstance(item, str):
+        cls = filter_class_by_name(item)
+        return FilterScheme.single(cls) if cls is not None else None
+    return None
+
+
 class ImageFilterCompareWindow(QWidget):
-    def __init__(self, pixmap: QPixmap, filter_names: list[str], parent=None):
+    def __init__(self, pixmap: QPixmap, schemes: list = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("图像滤镜对比")
         self.resize(1000, 650)
@@ -42,9 +62,10 @@ class ImageFilterCompareWindow(QWidget):
         viewer_no_filter.setObjectName("(无滤镜)")
         items.append(viewer_no_filter)
 
-        for name in filter_names:
-            viewer = FilterImageViewer(QPixmap(pixmap), name)
-            viewer.setObjectName(name)
+        for scheme in [s for s in (to_scheme_item(x) for x in (schemes or [])) if s]:
+            viewer = FilterImageViewer(QPixmap(pixmap))
+            viewer.set_scheme(scheme)
+            viewer.setObjectName(scheme.display_name())
             items.append(viewer)
 
         self._list_viewer = ListViewer(
@@ -214,7 +235,15 @@ class ImageFilterCompareWindow(QWidget):
 
     def _on_add_item(self):
         print('开始添加元素')
+        dlg = FilterSchemeSelectorDialog(self, "添加对比项（滤镜或方案）")
+        if dlg.exec() != QDialog.Accepted:
+            return
+        scheme = dlg.current_scheme()
+        if scheme is None:
+            return
         viewer = FilterImageViewer(QPixmap(self._input_pixmap))
+        viewer.set_scheme(scheme)
+        viewer.setObjectName(scheme.display_name())
         liw = self._list_viewer.add_item(viewer)
         self._hook_item(liw)
         self._end_sync()
@@ -254,7 +283,7 @@ def run_demo():
         print("警告：未找到示例图片，使用空画布")
         pixmaps.append(QPixmap())
 
-    filter_names = ['正片叠底']
+    filter_names = ['正片叠底', '边缘检测']
 
     window = ImageFilterCompareWindow(pixmaps[0], filter_names)
     window.setWindowTitle("图像滤镜对比演示")

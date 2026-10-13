@@ -1,4 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
+#
+# pixnex 打包配置（PyInstaller）
+# ==============================
+# 使用 onedir（目录）模式，而不是 onefile：
+#   onefile 的引导程序启动时必须先把整个包解压到 %TEMP%\_MEIxxxxxx，
+#   一旦系统临时目录不可写/被安全软件拦截，就会在任何 Python 代码运行之前
+#   弹出原生错误框 “Could not create temporary directory!”。
+#   onedir 直接从 dist\pixnex\ 目录运行，不需要临时目录，启动也更快。
+#
+# 产物：dist\pixnex\pixnex.exe（分发时整个 dist\pixnex 文件夹一起给）
+#
+# 如果确实需要单文件 exe，把文件末尾 EXE 的 exclude_binaries 去掉、把
+# a.binaries / a.datas 移回 EXE，并给 EXE 加 runtime_tmpdir（换成一个确定可写
+# 的目录，例如 exe 所在目录相对路径 '.'），同时去掉 COLLECT。
 import os
 import sys
 from pathlib import Path
@@ -97,16 +111,14 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='pixnex',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
     upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -114,4 +126,14 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='pixnex.ico',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='pixnex',
 )

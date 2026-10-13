@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 **/__pycache__/
 *.pyc
 *.pyo
@@ -15,3 +15,7 @@ dist/
 # Debug logs
 debug.log
 debug.html
+
+# 滤镜方案等运行时数据（默认写入可写的用户目录，退回项目目录时忽略）
+.pixnex_colorful/
+

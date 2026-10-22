@@ -1,70 +1,69 @@
+"""列表查看器：多项内容的「重叠对比 / 横向对比」容器。
+
+布局说明（本次重构重点）：
+    * 横向模式不再手算 ``setGeometry``：``_HorizontalContainer`` 用一个
+      ``QHBoxLayout`` 排列 :class:`ListItemWidget`，每项的最小宽度 = 视口宽度
+      平分（``viewport / n``），窗口缩放时由布局自动重排，同时保持各项等宽；
+    * 重叠模式继续用 ``QStackedWidget``，顶部导航按钮负责悬停预览 / 单击切换；
+    * 导航按钮的选中态由动态属性 ``variant`` + ``theme.repolish`` 驱动，不再
+      给单个控件写样式表；
+    * 每个列表项都是 ``Card`` 组合出来的：标题 ``ElidedLabel`` + 删除
+      ``IconButton`` 的标题行，正文放调用方传入的内容控件。
+"""
+
 from enum import Enum
 from typing import Optional
 
-from PySide6.QtCore import Qt, QEvent, Signal, QTimer
+from PySide6.QtCore import QEvent, QTimer, Signal
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QScrollArea, QSizePolicy, QStackedWidget,
+    QHBoxLayout, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
+from .ui.components import (
+    Card, Divider, ElidedLabel, GhostButton, IconButton, SecondaryButton,
+    ScrollArea, flow, hbox,
+)
+from .ui.theme import set_variant
+from .ui.tokens import SPACE, Role, Variant
 
-class _NavButton(QPushButton):
+# Qt 的超大尺寸上限（等价 QWIDGETSIZE_MAX），用于取消最大宽度限制。
+_UNLIMITED = 16777215
+
+
+class _NavButton(GhostButton):
+    """导航按钮：鼠标进入时把序号发出去（悬停预览用）。"""
+
     hovered = Signal(int)
 
     def __init__(self, text: str, index: int, parent=None):
         super().__init__(text, parent)
         self._nav_index = index
-        self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(28)
 
     def enterEvent(self, event):
         self.hovered.emit(self._nav_index)
         super().enterEvent(event)
 
 
-class ListItemWidget(QWidget):
+class ListItemWidget(Card):
+    """一个列表项：标题行（可省略标题 + 删除按钮）+ 内容控件。"""
+
     deleteRequested = Signal()
 
     def __init__(self, content_widget: QWidget, title: str = "", parent=None):
-        super().__init__(parent)
+        super().__init__("", parent, padding=SPACE.sm, spacing=SPACE.xs)
         self._content_widget = content_widget
         content_widget.setParent(self)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
-
-        top_row = QHBoxLayout()
-        top_row.setContentsMargins(0, 0, 0, 0)
-
-        self._title_label = QLabel(title)
-        self._title_label.setStyleSheet(
-            "color: #ddd; font-size: 12px; font-weight: bold; background: transparent;"
-        )
-        top_row.addWidget(self._title_label)
-        top_row.addStretch()
-
-        self._delete_btn = QPushButton("✕")
-        self._delete_btn.setFixedSize(24, 24)
-        self._delete_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #E53935; color: white;
-                border: none; border-radius: 3px; font-size: 12px;
-            }
-            QPushButton:hover { background-color: #C62828; }
-        """)
-        self._delete_btn.setCursor(Qt.PointingHandCursor)
+        self._title_label = ElidedLabel(title, role=Role.SECTION)
+        self._delete_btn = IconButton("close", tooltip="移除", danger=True)
         self._delete_btn.clicked.connect(self.deleteRequested)
-        top_row.addWidget(self._delete_btn)
+        self.add_layout(hbox(self._title_label, self._delete_btn,
+                             spacing=SPACE.xs))
+        self.add(content_widget, 1)
 
-        layout.addLayout(top_row)
-        layout.addWidget(content_widget, 1)
-
-        self.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.MinimumExpanding)
-        self.setMinimumSize(120, 80)
-        self.setStyleSheet(
-            "ListItemWidget { background-color: #2a2a2a; border-radius: 4px; }"
-        )
+        self.setSizePolicy(QSizePolicy.Policy.MinimumExpanding,
+                           QSizePolicy.Policy.MinimumExpanding)
+        self.setMinimumHeight(80)
 
     @property
     def content_widget(self) -> QWidget:
@@ -72,14 +71,25 @@ class ListItemWidget(QWidget):
 
     @property
     def title(self) -> str:
-        return self._title_label.text()
+        return self._title_label.full_text()
 
     @title.setter
     def title(self, text: str):
         self._title_label.setText(text)
 
 
+class _HorizontalContainer(QWidget):
+    """横向对比容器：等宽排列列表项，宽度由 :class:`ListViewer` 统一下发。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.row = QHBoxLayout(self)
+        self.row.setContentsMargins(SPACE.sm, SPACE.xs, SPACE.sm, SPACE.xs)
+        self.row.setSpacing(SPACE.sm)
+
+
 class ListViewer(QWidget):
+    """多个内容控件的对比容器（重叠 / 横向两种视图模式）。"""
 
     class ViewMode(Enum):
         HORIZONTAL = "horizontal"
@@ -87,14 +97,14 @@ class ListViewer(QWidget):
 
     itemSwitching = Signal(ListItemWidget)
     itemSwitched = Signal(ListItemWidget)
-    itemRemove=Signal(ListItemWidget)
-    rebuilding=Signal()
-    rebuilded=Signal()
+    itemRemove = Signal(ListItemWidget)
+    rebuilding = Signal()
+    rebuilded = Signal()
     viewModeChanging = Signal(object)
     viewModeChanged = Signal(object)
     closed = Signal()
 
-    def __init__(self, items: Optional[list[QWidget]] = None,
+    def __init__(self, items: Optional[list] = None,
                  view_mode: ViewMode = ViewMode.OVERLAP, parent=None,
                  item_width_fn=None):
         super().__init__(parent)
@@ -104,7 +114,9 @@ class ListViewer(QWidget):
         self._active_index = 0 if items else -1
         self._hover_index = -1
         self._nav_buttons: list[_NavButton] = []
+        # 兼容旧调用：横向模式改由布局等分宽度，这个回调不再参与排版。
         self._item_width_fn = item_width_fn
+        self._updating_widths = False
 
         self._hover_timer = QTimer(self)
         self._hover_timer.setSingleShot(True)
@@ -119,79 +131,53 @@ class ListViewer(QWidget):
             self._rebuild_current_view()
             self._rebuild_nav_buttons()
 
+    # ------------------------------------------------------------------
+    # 界面
+    # ------------------------------------------------------------------
     def _build_ui(self):
-        self.setStyleSheet("ListViewer { background-color: #1e1e1e; }")
-
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        tb = QWidget()
-        tb.setStyleSheet("background-color: #2a2a2a;")
-        t_layout = QHBoxLayout(tb)
-        t_layout.setContentsMargins(8, 4, 8, 4)
-        t_layout.setSpacing(6)
-
-        self._btn_add = QPushButton("+ 添加")
-        self._btn_add.setStyleSheet(self._btn_style("#26A69A"))
-        self._btn_add.setCursor(Qt.PointingHandCursor)
+        actions = QWidget()
+        actions_layout = hbox(
+            spacing=SPACE.sm,
+            margins=(SPACE.sm, SPACE.xs, SPACE.sm, SPACE.xs))
+        self._btn_add = SecondaryButton("添加", icon_name="add",
+                                        tooltip="添加对比项")
         self._btn_add.clicked.connect(self._on_add_clicked)
-        t_layout.addWidget(self._btn_add)
+        actions_layout.addWidget(self._btn_add)
 
-        self._btn_toggle = QPushButton(
+        self._btn_toggle = GhostButton(
             "重叠对比" if self._view_mode == ListViewer.ViewMode.HORIZONTAL
-            else "横向对比"
-        )
-        self._btn_toggle.setStyleSheet(self._btn_style("#5C6BC0"))
-        self._btn_toggle.setCursor(Qt.PointingHandCursor)
+            else "横向对比")
         self._btn_toggle.clicked.connect(self._toggle_view_mode)
-        t_layout.addWidget(self._btn_toggle)
+        actions_layout.addWidget(self._btn_toggle)
+        actions_layout.addStretch(1)
+        actions.setLayout(actions_layout)
+        main_layout.addWidget(actions)
 
-        t_layout.addStretch()
-
+        # 导航按钮单独一行：项目多时自动换行，不会把工具栏挤出窗口。
         self._nav_container = QWidget()
-        self._nav_container.setStyleSheet("background: transparent;")
-        self._nav_layout = QHBoxLayout(self._nav_container)
-        self._nav_layout.setContentsMargins(0, 0, 0, 0)
-        self._nav_layout.setSpacing(4)
-        self._nav_container.setVisible(self._view_mode == ListViewer.ViewMode.OVERLAP)
+        self._nav_layout = flow(
+            spacing=SPACE.xs,
+            margins=(SPACE.sm, 0, SPACE.sm, SPACE.xs),
+            parent=self._nav_container)
+        self._nav_container.setVisible(
+            self._view_mode == ListViewer.ViewMode.OVERLAP)
         self._nav_container.installEventFilter(self)
-        t_layout.addWidget(self._nav_container)
+        main_layout.addWidget(self._nav_container)
 
-        main_layout.addWidget(tb)
+        main_layout.addWidget(Divider())
 
         self._mode_stack = QStackedWidget()
 
-        self._h_scroll = QScrollArea()
-        self._h_scroll.setWidgetResizable(True)
-        self._h_scroll.setFrameShape(QScrollArea.NoFrame)
-        self._h_scroll.setStyleSheet("""
-            QScrollArea { border: none; background: transparent; }
-            QScrollBar:horizontal {
-                background: #1a1a1a; height: 8px; border-radius: 4px;
-            }
-            QScrollBar::handle:horizontal {
-                background: #444; border-radius: 4px; min-width: 30px;
-            }
-            QScrollBar::handle:horizontal:hover { background: #555; }
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-                width: 0;
-            }
-            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
-                background: none;
-            }
-        """)
-        self._h_scroll.installEventFilter(self)
-        self._h_container = QWidget()
-        self._h_container.setStyleSheet("background: transparent;")
-        self._h_scroll.setWidget(self._h_container)
+        self._h_container = _HorizontalContainer()
+        self._h_container.installEventFilter(self)
+        self._h_scroll = ScrollArea(self._h_container, horizontal=True)
         self._mode_stack.addWidget(self._h_scroll)
-        self._H_MARGIN_LR = 8
-        self._H_MARGIN_TB = 4
-        self._H_SPACING = 8
 
         self._overlap_stack = QStackedWidget()
-        self._overlap_stack.setStyleSheet("background: transparent;")
         self._mode_stack.addWidget(self._overlap_stack)
 
         self._mode_stack.setCurrentIndex(
@@ -200,7 +186,8 @@ class ListViewer(QWidget):
         main_layout.addWidget(self._mode_stack, 1)
 
     def _add_item_internal(self, content_widget: QWidget):
-        title = content_widget.windowTitle() or content_widget.objectName() or ""
+        title = (content_widget.windowTitle() or content_widget.objectName()
+                 or "")
         liw = ListItemWidget(content_widget, title)
         liw.deleteRequested.connect(
             lambda liw=liw: self._on_item_delete_requested(liw)
@@ -209,6 +196,9 @@ class ListViewer(QWidget):
         self._item_widgets.append(liw)
         return liw
 
+    # ------------------------------------------------------------------
+    # 增删
+    # ------------------------------------------------------------------
     def _on_close(self):
         print('close')
         for liw in self._item_widgets:
@@ -226,7 +216,7 @@ class ListViewer(QWidget):
         pass
 
     def add_item(self, content_widget: QWidget):
-        liw= self._add_item_internal(content_widget)
+        liw = self._add_item_internal(content_widget)
         if self._active_index == -1:
             self._active_index = 0
         self._rebuild_current_view()
@@ -240,7 +230,8 @@ class ListViewer(QWidget):
         if n == 0 or index < 0 or index >= n:
             return
         print('开始移除')
-        itemChange=self._view_mode == ListViewer.ViewMode.OVERLAP and index == self._active_index
+        itemChange = (self._view_mode == ListViewer.ViewMode.OVERLAP
+                      and index == self._active_index)
         if itemChange:
             self.itemSwitching.emit(self._current_item_widget())
             if n == 1:
@@ -285,6 +276,9 @@ class ListViewer(QWidget):
         if self._active_index >= 0:
             self.remove_item(self._active_index)
 
+    # ------------------------------------------------------------------
+    # 视图重建
+    # ------------------------------------------------------------------
     def _rebuild_current_view(self):
         self.rebuilding.emit()
         if self._view_mode == ListViewer.ViewMode.HORIZONTAL:
@@ -293,39 +287,28 @@ class ListViewer(QWidget):
             self._rebuild_overlap_view()
         self.rebuilded.emit()
 
-    def _rebuild_horizontal_view(self):
-        self._h_container.setMinimumSize(0, 0)
+    def _clear_horizontal_row(self) -> None:
+        while self._h_container.row.count():
+            item = self._h_container.row.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None and widget not in self._item_widgets:
+                widget.hide()
 
+    def _rebuild_horizontal_view(self):
+        self._clear_horizontal_row()
         if not self._item_widgets:
             return
-
-        vp = self._h_scroll.viewport()
-        vp_h = vp.height() if vp else 100
-
-        x = self._H_MARGIN_LR
-        item_h = vp_h - self._H_MARGIN_TB * 2
-
         for liw in self._item_widgets:
-            liw.setParent(self._h_container)
-            if self._item_width_fn is not None:
-                w = self._item_width_fn(liw, item_h)
-            else:
-                sh = liw.sizeHint()
-                w = sh.width()
-            liw.setGeometry(x, self._H_MARGIN_TB, w, item_h)
+            self._h_container.row.addWidget(liw, 1)
             liw.show()
-            x += w + self._H_SPACING
-
-        total_w = x - self._H_SPACING + self._H_MARGIN_LR
-        self._h_container.setMinimumSize(total_w, vp_h)
+        self._update_horizontal_widths()
 
     def _rebuild_overlap_view(self):
+        self._clear_horizontal_row()
         while self._overlap_stack.count():
             w = self._overlap_stack.widget(0)
             self._overlap_stack.removeWidget(w)
-
         for liw in self._item_widgets:
-            liw.setParent(self._overlap_stack)
             self._overlap_stack.addWidget(liw)
 
         if self._active_index >= 0 and self._overlap_stack.count() > 0:
@@ -333,15 +316,42 @@ class ListViewer(QWidget):
                 min(self._active_index, self._overlap_stack.count() - 1)
             )
 
-    def _rebuild_nav_buttons(self):
-        for btn in self._nav_buttons:
-            btn.deleteLater()
-        self._nav_buttons.clear()
+    def _update_horizontal_widths(self):
+        """每项最小宽度 = 视口宽度平分，保证各视图等宽且不横向溢出。"""
+        if self._updating_widths:
+            return
+        self._updating_widths = True
+        try:
+            count = len(self._item_widgets)
+            scroll = getattr(self, "_h_scroll", None)
+            if (count == 0 or scroll is None
+                    or self._view_mode != ListViewer.ViewMode.HORIZONTAL):
+                for liw in self._item_widgets:
+                    liw.setMinimumWidth(0)
+                    liw.setMaximumWidth(_UNLIMITED)
+                return
+            viewport = scroll.viewport()
+            margins = self._h_container.row.contentsMargins()
+            spacing = self._h_container.row.spacing() * (count - 1)
+            available = (viewport.width() - margins.left() - margins.right()
+                         - spacing)
+            share = max(0, available // count)
+            for liw in self._item_widgets:
+                liw.setMinimumWidth(share)
+                liw.setMaximumWidth(_UNLIMITED)
+        finally:
+            self._updating_widths = False
 
-        for i in reversed(range(self._nav_layout.count())):
-            item = self._nav_layout.takeAt(i)
-            if item and item.widget():
-                item.widget().deleteLater()
+    # ------------------------------------------------------------------
+    # 导航
+    # ------------------------------------------------------------------
+    def _rebuild_nav_buttons(self):
+        while self._nav_layout.count():
+            item = self._nav_layout.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
+        self._nav_buttons.clear()
 
         for i, liw in enumerate(self._item_widgets):
             title = liw.title or f"项 {i + 1}"
@@ -353,15 +363,14 @@ class ListViewer(QWidget):
             self._nav_buttons.append(btn)
             self._nav_layout.addWidget(btn)
 
-        self._nav_layout.addStretch()
+        self._nav_container.setVisible(
+            self._view_mode == ListViewer.ViewMode.OVERLAP)
         self._update_nav_button_styles()
 
     def _update_nav_button_styles(self):
         for i, btn in enumerate(self._nav_buttons):
-            if i == self._active_index:
-                btn.setStyleSheet(self._btn_style_active())
-            else:
-                btn.setStyleSheet(self._btn_style_inactive())
+            set_variant(btn, Variant.PRIMARY if i == self._active_index
+                        else Variant.GHOST)
 
     def _on_nav_button_clicked(self, index: int):
         if index != self._active_index:
@@ -387,34 +396,28 @@ class ListViewer(QWidget):
         self._hover_index = -1
         self._hover_timer.stop()
 
-        if self._view_mode == ListViewer.ViewMode.OVERLAP and self._active_index >= 0:
+        if (self._view_mode == ListViewer.ViewMode.OVERLAP
+                and self._active_index >= 0):
             cur = self._overlap_stack.currentIndex()
-            if cur != self._active_index and self._active_index < self._overlap_stack.count():
+            if (cur != self._active_index
+                    and self._active_index < self._overlap_stack.count()):
                 old_liw = self._item_widgets[cur] if cur < len(self._items) else None
                 self._perform_item_switch(old_liw, self._active_index)
 
     def eventFilter(self, obj, event):
-        if obj == self._nav_container and event.type() == QEvent.Leave:
+        # 注意：导航容器的过滤器在 _h_container 创建之前就装好了，构造期间也可能
+        # 收到事件，所以这里必须容忍属性还没就绪。
+        if obj is self._nav_container and event.type() == QEvent.Type.Leave:
             self._on_nav_hover_leave()
             return False
-        if (hasattr(self, '_h_scroll') and obj == self._h_scroll
-                and event.type() == QEvent.Resize
-                and self._view_mode == ListViewer.ViewMode.HORIZONTAL
-                and self._item_widgets):
-            vp = self._h_scroll.viewport()
-            if vp:
-                item_h = vp.height() - self._H_MARGIN_TB * 2
-                x = self._H_MARGIN_LR
-                for liw in self._item_widgets:
-                    if self._item_width_fn is not None:
-                        w = self._item_width_fn(liw, item_h)
-                    else:
-                        w = liw.width()
-                    liw.setGeometry(x, self._H_MARGIN_TB, w, item_h)
-                    x += w + self._H_SPACING
+        if (getattr(self, "_h_container", None) is obj
+                and event.type() == QEvent.Type.Resize
+                and self._view_mode == ListViewer.ViewMode.HORIZONTAL):
+            self._update_horizontal_widths()
         return super().eventFilter(obj, event)
 
-    def _perform_item_switch(self, old_liw: Optional[ListItemWidget], new_index: int):
+    def _perform_item_switch(self, old_liw: Optional[ListItemWidget],
+                             new_index: int):
         if old_liw is not None:
             self.itemSwitching.emit(old_liw)
         if self._view_mode == ListViewer.ViewMode.OVERLAP:
@@ -430,6 +433,9 @@ class ListViewer(QWidget):
         self._perform_item_switch(old_liw, index)
         self._update_nav_button_styles()
 
+    # ------------------------------------------------------------------
+    # 状态查询
+    # ------------------------------------------------------------------
     def _current_widget(self):
         if 0 <= self._active_index < len(self._items):
             return self._items[self._active_index]
@@ -441,7 +447,7 @@ class ListViewer(QWidget):
         return None
 
     @property
-    def items(self) -> list[QWidget]:
+    def items(self) -> list:
         return list(self._items)
 
     @property
@@ -465,7 +471,8 @@ class ListViewer(QWidget):
             "横向对比" if mode == ListViewer.ViewMode.HORIZONTAL
             else "重叠对比"
         )
-        self._nav_container.setVisible(mode == ListViewer.ViewMode.OVERLAP)
+        self._nav_container.setVisible(
+            mode == ListViewer.ViewMode.OVERLAP)
         self._mode_stack.setCurrentIndex(
             0 if mode == ListViewer.ViewMode.HORIZONTAL else 1
         )
@@ -480,53 +487,27 @@ class ListViewer(QWidget):
             else ListViewer.ViewMode.OVERLAP
         )
 
-    @staticmethod
-    def _btn_style(color: str) -> str:
-        return f"""
-            QPushButton {{ padding: 4px 12px; font-size: 11px;
-                background-color: {color}; color: white;
-                border: none; border-radius: 3px; }}
-            QPushButton:hover {{ background-color: {color}; }}
-        """
-
-    @staticmethod
-    def _btn_style_active() -> str:
-        return """
-            QPushButton { padding: 4px 12px; font-size: 11px;
-                background-color: #26A69A; color: white;
-                border: none; border-radius: 3px; }
-            QPushButton:hover { background-color: #00897B; }
-        """
-
-    @staticmethod
-    def _btn_style_inactive() -> str:
-        return """
-            QPushButton { padding: 4px 12px; font-size: 11px;
-                background-color: #3a3a3a; color: #aaa;
-                border: none; border-radius: 3px; }
-            QPushButton:hover { background-color: #555; color: white; }
-        """
-
 
 def run_demo():
     import sys
-    from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout
+
+    from PySide6.QtWidgets import QApplication
+
+    from .ui.components import SubtitleLabel, TitleLabel
+    from .ui.theme import ensure_theme
 
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setStyle("Fusion")
+    ensure_theme(app)
 
     items = []
     for i in range(3):
         w = QWidget()
         w.setObjectName(f"内容项 {i + 1}")
         layout = QVBoxLayout(w)
-        label = QLabel(f"内容项 {i + 1}")
-        label.setStyleSheet(
-            "color: white; font-size: 24px; font-weight: bold;"
-        )
-        label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label)
-        w.setStyleSheet("background-color: #333; border-radius: 8px;")
+        layout.setContentsMargins(SPACE.sm, SPACE.sm, SPACE.sm, SPACE.sm)
+        layout.addWidget(TitleLabel(f"内容项 {i + 1}"))
+        layout.addWidget(SubtitleLabel("用布局排版的示例内容。"))
+        layout.addStretch(1)
         items.append(w)
 
     viewer = ListViewer(items, view_mode=ListViewer.ViewMode.OVERLAP)
@@ -536,7 +517,7 @@ def run_demo():
     def on_switched(old_liw, new_liw):
         old_name = old_liw.title if old_liw else "None"
         new_name = new_liw.title if new_liw else "None"
-        print(f"切换: {old_name} → {new_name}")
+        print(f"切换: {old_name} -> {new_name}")
 
     def on_closed():
         print("所有项已删除，关闭查看器")
@@ -557,13 +538,10 @@ def run_demo():
         w = QWidget()
         w.setObjectName(f"新内容项 {i}")
         layout = QVBoxLayout(w)
-        label = QLabel(f"新内容项 {i}")
-        label.setStyleSheet(
-            "color: white; font-size: 24px; font-weight: bold;"
-        )
-        label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label)
-        w.setStyleSheet("background-color: #444; border-radius: 8px;")
+        layout.setContentsMargins(SPACE.sm, SPACE.sm, SPACE.sm, SPACE.sm)
+        layout.addWidget(TitleLabel(f"新内容项 {i}"))
+        layout.addWidget(SubtitleLabel("用布局排版的示例内容。"))
+        layout.addStretch(1)
         viewer.add_item(w)
 
     viewer._btn_add.clicked.connect(make_item)

@@ -232,18 +232,12 @@ def main():
 
     import colorPickerPro.filter_scheme_panel as panel_mod
 
-    real_input_dialog = panel_mod.QInputDialog
-
-    class _FakeInputDialog:
-        @staticmethod
-        def getText(*args, **kwargs):
-            return ("自动保存方案", True)
-
-    panel_mod.QInputDialog = _FakeInputDialog
+    real_prompt_text = panel_mod.prompt_text
+    panel_mod.prompt_text = lambda *args, **kwargs: ("自动保存方案", True)
     try:
         sp._on_save()
     finally:
-        panel_mod.QInputDialog = real_input_dialog
+        panel_mod.prompt_text = real_prompt_text
     check("保存后 * 消失", sp.is_dirty() is False and sp._name_lbl.text() == "[自动保存方案]")
     check("保存后可读回", save_store.names() == ["自动保存方案"]
           and len(save_store.get("自动保存方案").layers) == 2)

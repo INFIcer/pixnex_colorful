@@ -20,9 +20,8 @@ from .shader_engine import ShaderEngine, GLSL_COMMON
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPainter, QColor, QPen, QPixmap, QImage
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSlider, QDoubleSpinBox,
-    QSpinBox, QCheckBox, QFrame, QPushButton, QLineEdit, QGraphicsOpacityEffect,
-    QFileDialog,
+    QWidget, QVBoxLayout, QLabel, QSlider, QDoubleSpinBox,
+    QCheckBox, QLineEdit, QGraphicsOpacityEffect, QSizePolicy,
 )
 from .colorMath import (
     bgr_to_cielch, bgr_to_gray,
@@ -30,6 +29,50 @@ from .colorMath import (
     bgra_to_bgr, invert, sepia, edge_detect,
 )
 from .color_picker_dialog import ColorPickerDialog
+from .ui.components import (
+    ColorSwatch, FieldLabel, MonoLabel, SecondaryButton, get_open_file_name,
+    hbox, vbox,
+)
+from .ui.tokens import RADIUS, SPACE, qcolor
+
+
+# ============================================================
+# 参数行外观常量
+# ============================================================
+# 参数名用最小宽度而不是固定宽度：名称短时保持列对齐，名称长/字体变大时
+# 还能自己撑开，窄面板里也不会把编辑器顶出可见区域。
+_PARAM_LABEL_MIN_WIDTH = 72
+# 数值输入框本身是小尺寸控件，给一个最小宽度即可（允许按需要变宽）。
+# 78px 足够显示 “150.0” + 上下箭头，再窄就会裁掉数字。
+_PARAM_SPIN_MIN_WIDTH = 78
+_PARAM_ROW_SPACING = SPACE.sm
+
+
+class _ClickableSwatch(ColorSwatch):
+    """可点击的颜色预览块：颜色由 ColorSwatch 统一绘制，点击打开取色器。"""
+
+    clicked = Signal()
+
+    def __init__(self, color=None, parent=None):
+        super().__init__(color, parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("点击选择颜色")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+def _param_label(name, description=""):
+    """参数名标签（最小宽度 + 描述提示），替代原先的 QLabel#paramName。"""
+    label = FieldLabel(name)
+    label.setMinimumWidth(_PARAM_LABEL_MIN_WIDTH)
+    if description:
+        label.setToolTip(description)
+    return label
 
 
 # ============================================================
@@ -83,28 +126,24 @@ class FilterParam:
     def create_widget(self, on_changed):
         container = QWidget()
         self._container = container
-        row = QHBoxLayout(container)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
 
-        lbl = QLabel(self.name)
-        lbl.setObjectName("paramName")
-        lbl.setFixedWidth(72)
-        lbl.setToolTip(self.description)
-        row.addWidget(lbl)
+        lbl = _param_label(self.name, self.description)
 
         slider = QSlider(Qt.Horizontal)
         slider.setRange(0, 1000)
         slider.setValue(self._val_to_slider(self.value, self.vmin, self.vmax))
-        row.addWidget(slider, 1)
 
         spin = QDoubleSpinBox()
         spin.setRange(self.vmin, self.vmax)
         spin.setDecimals(1 if isinstance(self.step, int) and self.step >= 1 else 3)
         spin.setSingleStep(self.step)
         spin.setValue(self.value)
-        spin.setFixedWidth(72)
-        row.addWidget(spin)
+        spin.setMinimumWidth(_PARAM_SPIN_MIN_WIDTH)
+
+        # 单值参数分两行：第一行「参数名 + 数值」，第二行整条滑块。
+        # 参数面板窄到 240px 时滑块仍有足够长度，不会被数值框挤成一小段。
+        header = hbox(lbl, None, spin, spacing=_PARAM_ROW_SPACING)
+        container.setLayout(vbox(header, slider, spacing=SPACE.xs))
 
         def on_slider(sv):
             val = self._slider_to_val(sv, self.vmin, self.vmax)
@@ -176,40 +215,37 @@ class RangeParam:
     def create_widget(self, on_changed):
         container = QWidget()
         self._container = container
-        row = QHBoxLayout(container)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(4)
 
-        lbl = QLabel(self.name)
-        lbl.setObjectName("paramName")
-        lbl.setFixedWidth(48)
-        lbl.setToolTip(self.description)
-        row.addWidget(lbl)
+        lbl = _param_label(self.name, self.description)
 
         rs = _RangeSlider(self)
-        row.addWidget(rs, 1)
 
         sp_low = QDoubleSpinBox()
         sp_low.setRange(self.absolute_min, self.absolute_max)
         sp_low.setDecimals(1 if isinstance(self.step, int) and self.step >= 1 else 3)
         sp_low.setSingleStep(self.step)
         sp_low.setValue(self.low)
-        sp_low.setFixedWidth(64)
-        row.addWidget(sp_low)
+        sp_low.setMinimumWidth(_PARAM_SPIN_MIN_WIDTH)
 
         sep = QLabel("~")
-        sep.setStyleSheet("color: #666;")
-        sep.setFixedWidth(16)
-        sep.setAlignment(Qt.AlignCenter)
-        row.addWidget(sep)
+        sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sep.setMinimumWidth(SPACE.md)
 
         sp_high = QDoubleSpinBox()
         sp_high.setRange(self.absolute_min, self.absolute_max)
         sp_high.setDecimals(1 if isinstance(self.step, int) and self.step >= 1 else 3)
         sp_high.setSingleStep(self.step)
         sp_high.setValue(self.high)
-        sp_high.setFixedWidth(64)
-        row.addWidget(sp_high)
+        sp_high.setMinimumWidth(_PARAM_SPIN_MIN_WIDTH)
+
+        # 双滑块独占一行，两个端点值放在下面一行：窄面板里既不裁数字也不挤滑块
+        spins_row = hbox(sp_low, sep, sp_high, None, spacing=SPACE.xs)
+        column = QVBoxLayout(container)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(SPACE.xs)
+        column.addWidget(lbl)
+        column.addWidget(rs)
+        column.addLayout(spins_row)
 
         def on_range(low, high):
             sp_low.blockSignals(True); sp_low.setValue(low); sp_low.blockSignals(False)
@@ -265,16 +301,18 @@ class BoolParam:
     def create_widget(self, on_changed):
         container = QWidget()
         self._container = container
-        row = QHBoxLayout(container)
-        row.setContentsMargins(0, 0, 0, 0)
 
         cb = QCheckBox(self.name)
         cb.setToolTip(self.description)
         cb.setChecked(self.value)
-        cb.setStyleSheet("color: #bbb; font-size: 12px; spacing: 6px;")
-        cb.toggled.connect(lambda checked: setattr(self, 'value', checked) or (self._notify_value_changed(), on_changed()) or None)
-        row.addWidget(cb)
-        row.addStretch()
+        container.setLayout(hbox(cb, None))
+
+        def on_toggle(checked):
+            self.value = checked
+            self._notify_value_changed()
+            on_changed()
+
+        cb.toggled.connect(on_toggle)
 
         return container
 
@@ -314,8 +352,7 @@ class ColorParam:
             return
         try:
             if self._swatch is not None:
-                self._swatch.setStyleSheet(
-                    self._swatch_style(self._r, self._g, self._b))
+                self._swatch.set_color(QColor(self._r, self._g, self._b))
             if self._hex_edit is not None:
                 self._hex_edit.blockSignals(True)
                 self._hex_edit.setText(f"#{self._r:02X}{self._g:02X}{self._b:02X}")
@@ -324,12 +361,6 @@ class ColorParam:
             self._container = None
             self._swatch = None
             self._hex_edit = None
-
-    @staticmethod
-    def _swatch_style(r, g, b):
-        return (f"QPushButton {{ background-color: rgb({r},{g},{b});"
-                " border: 1px solid #666; border-radius: 2px; }"
-                "QPushButton:hover { border: 1px solid #aaa; }")
 
     def on_value_changed(self, cb):
         self._listeners.append(cb)
@@ -354,33 +385,27 @@ class ColorParam:
     def create_widget(self, on_changed):
         container = QWidget()
         self._container = container
-        row = QHBoxLayout(container)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
 
-        lbl = QLabel(self.name)
-        lbl.setObjectName("paramName")
-        lbl.setFixedWidth(72)
-        lbl.setToolTip(self.description)
-        row.addWidget(lbl)
+        lbl = _param_label(self.name, self.description)
 
-        swatch = QPushButton()
-        swatch.setFixedSize(22, 22)
-        swatch.setCursor(Qt.PointingHandCursor)
-        swatch.setStyleSheet(self._swatch_style(self._r, self._g, self._b))
+        swatch = _ClickableSwatch(QColor(self._r, self._g, self._b))
+        # 颜色块保持固定观感（约 160px），多余宽度留给 HEX 输入框
+        swatch.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self._swatch = swatch
 
         hex_edit = QLineEdit()
         hex_edit.setMaxLength(7)
         hex_edit.setText(f"#{self._r:02X}{self._g:02X}{self._b:02X}")
-        hex_edit.setFixedWidth(64)
         hex_edit.setPlaceholderText("#RRGGBB")
-        hex_edit.setStyleSheet("QLineEdit { background: #3a3a3a; color: white; border: 1px solid #555; border-radius: 3px; padding: 1px 4px; font-size: 11px; }")
+        hex_edit.setMinimumWidth(76)
         self._hex_edit = hex_edit
+
+        container.setLayout(hbox(lbl, swatch, hex_edit,
+                                 spacing=_PARAM_ROW_SPACING, stretch=2))
 
         def sync(r, g, b):
             self._r, self._g, self._b = r, g, b
-            swatch.setStyleSheet(self._swatch_style(r, g, b))
+            swatch.set_color(QColor(r, g, b))
             hex_edit.blockSignals(True); hex_edit.setText(f"#{r:02X}{g:02X}{b:02X}"); hex_edit.blockSignals(False)
             self._notify_value_changed()
             on_changed()
@@ -393,9 +418,6 @@ class ColorParam:
                 sync(r, g, b)
 
         swatch.clicked.connect(open_dialog)
-        row.addWidget(swatch)
-        row.addWidget(hex_edit)
-        row.addStretch()
 
         def on_hex():
             text = hex_edit.text()
@@ -445,22 +467,14 @@ class TextParam:
     def create_widget(self, on_changed):
         container = QWidget()
         self._container = container
-        row = QHBoxLayout(container)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
 
-        lbl = QLabel(self.name)
-        lbl.setObjectName("paramName")
-        lbl.setFixedWidth(72)
-        lbl.setToolTip(self.description)
-        row.addWidget(lbl)
+        lbl = _param_label(self.name, self.description)
 
         edit = QLineEdit()
         edit.setText(self.value)
-        edit.setPlaceholderText("请输入文本...")
-        edit.setStyleSheet("QLineEdit { background: #3a3a3a; color: white; border: 1px solid #555;"
-                           " border-radius: 3px; padding: 2px 4px; font-size: 11px; }")
-        row.addWidget(edit, 1)
+        edit.setPlaceholderText("请输入文本…")
+
+        container.setLayout(hbox(lbl, edit, spacing=_PARAM_ROW_SPACING, stretch=1))
 
         def on_edit():
             self.value = edit.text()
@@ -507,31 +521,17 @@ class FileParam:
     def create_widget(self, on_changed):
         container = QWidget()
         self._container = container
-        row = QHBoxLayout(container)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
 
-        lbl = QLabel(self.name)
-        lbl.setObjectName("paramName")
-        lbl.setFixedWidth(72)
-        lbl.setToolTip(self.description)
-        row.addWidget(lbl)
+        lbl = _param_label(self.name, self.description)
 
         edit = QLineEdit()
         edit.setText(self.value)
-        edit.setStyleSheet("QLineEdit { background: #3a3a3a; color: white; border: 1px solid #555;"
-                           " border-radius: 3px; padding: 2px 4px; font-size: 11px; }")
-        row.addWidget(edit, 1)
 
-        btn = QPushButton("浏览...")
-        btn.setCursor(Qt.PointingHandCursor)
-        btn.setStyleSheet("""
-            QPushButton { background: #5C6BC0; color: white; border: none;
-                          border-radius: 3px; padding: 2px 8px; font-size: 11px; }
-            QPushButton:hover { background: #3F51B5; }
-            QPushButton:pressed { background: #303F9F; }
-        """)
-        row.addWidget(btn)
+        btn = SecondaryButton("浏览…")
+        btn.setToolTip("选择文件")
+
+        container.setLayout(hbox(lbl, edit, btn, spacing=_PARAM_ROW_SPACING,
+                                 stretch=1))
 
         def sync(path):
             self.value = path
@@ -543,7 +543,8 @@ class FileParam:
             sync(edit.text())
 
         def browse():
-            path, _ = QFileDialog.getOpenFileName(
+            # 无边框文件选择对话框（与主界面同款自绘外壳）
+            path, _ = get_open_file_name(
                 container, "选择文件", self.value, self.file_filter)
             if path:
                 sync(path)
@@ -601,41 +602,33 @@ class Vec2Param:
     def create_widget(self, on_changed):
         container = QWidget()
         self._container = container
-        row = QHBoxLayout(container)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(4)
 
-        lbl = QLabel(self.name)
-        lbl.setObjectName("paramName")
-        lbl.setFixedWidth(56)
-        lbl.setToolTip(self.description)
-        row.addWidget(lbl)
+        lbl = _param_label(self.name, self.description)
+        lbl.setMinimumWidth(56)
 
-        lbl_x = QLabel("X")
-        lbl_x.setStyleSheet("color: #888; font-size: 11px;")
-        row.addWidget(lbl_x)
+        lbl_x = FieldLabel("X")
+        lbl_y = FieldLabel("Y")
 
         sp_x = QDoubleSpinBox()
         sp_x.setRange(self.vmin, self.vmax)
         sp_x.setDecimals(1 if isinstance(self.step, int) and self.step >= 1 else 3)
         sp_x.setSingleStep(self.step)
         sp_x.setValue(self._x)
-        sp_x.setFixedWidth(80)
-        row.addWidget(sp_x)
-
-        lbl_y = QLabel("Y")
-        lbl_y.setStyleSheet("color: #888; font-size: 11px;")
-        row.addWidget(lbl_y)
+        sp_x.setMinimumWidth(_PARAM_SPIN_MIN_WIDTH)
 
         sp_y = QDoubleSpinBox()
         sp_y.setRange(self.vmin, self.vmax)
         sp_y.setDecimals(1 if isinstance(self.step, int) and self.step >= 1 else 3)
         sp_y.setSingleStep(self.step)
         sp_y.setValue(self._y)
-        sp_y.setFixedWidth(80)
-        row.addWidget(sp_y)
+        sp_y.setMinimumWidth(_PARAM_SPIN_MIN_WIDTH)
 
-        row.addStretch()
+        # 参数名单独一行，X/Y 输入框在下面一行各占一半：窄面板里数字不会被裁掉
+        column = QVBoxLayout(container)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(SPACE.xs)
+        column.addWidget(lbl)
+        column.addLayout(hbox(lbl_x, sp_x, lbl_y, sp_y, None, spacing=SPACE.xs))
 
         def sync():
             self._x = sp_x.value()
@@ -698,24 +691,18 @@ class InfoParam:
     def create_widget(self, on_changed):
         container = QWidget()
         self._container = container
-        row = QHBoxLayout(container)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
 
-        lbl = QLabel(self.name)
-        lbl.setObjectName("paramName")
-        lbl.setFixedWidth(72)
-        lbl.setToolTip(self.description)
-        lbl.setAlignment(Qt.AlignTop)
-        row.addWidget(lbl)
+        lbl = _param_label(self.name, self.description)
 
-        value_lbl = QLabel(self._text)
-        value_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        value_lbl = MonoLabel(self._text)
         value_lbl.setWordWrap(self.word_wrap)
-        value_lbl.setStyleSheet("QLabel { color: #4fc3f7; font-size: 11px; background: #333;"
-                                " border: 1px solid #555; border-radius: 3px; padding: 2px 4px; }")
-        row.addWidget(value_lbl, 1)
         self._label = value_lbl
+
+        column = QVBoxLayout(container)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(SPACE.xs)
+        column.addWidget(lbl)
+        column.addWidget(value_lbl)
 
         return container
 
@@ -1029,7 +1016,7 @@ class HLSLightnessFilter(ImageFilter):
 class EdgeDetectFilter(ImageFilter):
     def __init__(self):
         self._params = [
-            RangeParam("阈值区间", "边缘检测的阈值区间，低于低阈值的梯度忽略，高于高阈值的为强边缘",
+            RangeParam("阈值区间", "边缘梯度阈值区间",
                        0, 255, 50, 150, 1),
         ]
 
@@ -1053,14 +1040,14 @@ class DetailAnalyzeFilter(ImageFilter):
     """信息量分析：分别计算 Lab 灰度边缘与 LCH 色度边缘，各自染色后相加合并。"""
 
     def __init__(self):
-        self._p_en_lab = BoolParam("启用Lab灰度", "是否将Lab亮度边缘纳入信息量分析", True)
-        self._p_en_chroma = BoolParam("启用LCH色度", "是否将LCH色度边缘纳入信息量分析", True)
-        self._p_lab_thresh = RangeParam("亮度", "Lab灰度图的边缘检测阈值区间", 0, 255, 0, 255, 1)
-        self._p_chroma_thresh = RangeParam("色度", "LCH色度图的边缘检测阈值区间", 0, 255, 0, 255, 1)
-        self._p_lab_weight = FilterParam("亮度权重", "Lab边缘灰度图的整体权重", 0, 1, 1.0, 0.01)
-        self._p_chroma_weight = FilterParam("色度权重", "LCH色度边缘灰度图的整体权重", 0, 1, 0.5, 0.01)
-        self._p_lab_color = ColorParam("亮度边缘颜色", "信息量分析中亮度边缘的染色颜色（乘法叠加）", 255, 0, 0)
-        self._p_chroma_color = ColorParam("色度边缘颜色", "信息量分析中色度边缘的染色颜色（乘法叠加）", 0, 255, 0)
+        self._p_en_lab = BoolParam("启用Lab灰度", "纳入 Lab 亮度边缘", True)
+        self._p_en_chroma = BoolParam("启用LCH色度", "纳入 LCH 色度边缘", True)
+        self._p_lab_thresh = RangeParam("亮度", "亮度边缘阈值区间", 0, 255, 0, 255, 1)
+        self._p_chroma_thresh = RangeParam("色度", "色度边缘阈值区间", 0, 255, 0, 255, 1)
+        self._p_lab_weight = FilterParam("亮度权重", "亮度边缘权重", 0, 1, 1.0, 0.01)
+        self._p_chroma_weight = FilterParam("色度权重", "色度边缘权重", 0, 1, 0.5, 0.01)
+        self._p_lab_color = ColorParam("亮度边缘颜色", "亮度边缘染色", 255, 0, 0)
+        self._p_chroma_color = ColorParam("色度边缘颜色", "色度边缘染色", 0, 255, 0)
         self._params = [
             self._p_en_lab, self._p_lab_thresh, self._p_lab_weight, self._p_lab_color,
             self._p_en_chroma, self._p_chroma_thresh, self._p_chroma_weight, self._p_chroma_color,
@@ -1166,7 +1153,7 @@ class MultiplyFilter(ImageFilter):
 
     def __init__(self):
         self._params = [
-            ColorParam("叠加颜色", "正片叠底使用的颜色，越暗则叠底效果越强", 128, 128, 128),
+            ColorParam("叠加颜色", "叠加颜色，越暗效果越强", 128, 128, 128),
         ]
 
     @classmethod
@@ -1191,10 +1178,10 @@ class MultiplyFilter(ImageFilter):
 class RateOfChangeFilter(ImageFilter):
     def __init__(self):
         self._params = [
-            RangeParam("频率范围", "灰度黑到白对应的条纹周期数范围", 0, 50, 1.0, 8.0, 0.1),
-            FilterParam("方向(°)", "条纹延伸角度，0°为水平方向", 0, 360, 0, 1),
-            BoolParam("反转", "反转频率映射：黑→最大频率，白→最小频率", False),
-            FilterParam("相位(°)", "条纹相位偏移", 0, 360, 0, 1),
+            RangeParam("频率范围", "黑白条纹周期范围", 0, 50, 1.0, 8.0, 0.1),
+            FilterParam("方向(°)", "条纹方向角", 0, 360, 0, 1),
+            BoolParam("反转", "反转频率映射", False),
+            FilterParam("相位(°)", "条纹相位", 0, 360, 0, 1),
         ]
 
     @classmethod
@@ -1326,20 +1313,20 @@ class _RangeSlider(QWidget):
         hi = self._x_from_val(self._param.high)
         hr = self.HANDLE_R
 
+        # 轨道 / 已选区间 / 滑块的颜色全部取自设计令牌
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#555"))
+        p.setBrush(qcolor("border"))
         p.drawRoundedRect(hr * 2, yc - 2, w - hr * 4, 4, 2, 2)
 
         if hi > lo:
-            p.setBrush(QColor(0, 120, 215))
+            p.setBrush(qcolor("accent"))
             p.drawRoundedRect(lo, yc - 2, hi - lo, 4, 2, 2)
 
         for cx, active in [(lo, self._dragging == 0), (hi, self._dragging == 1)]:
-            color = QColor("#ccc") if active else QColor("#999")
-            border = QColor("#666")
-            p.setBrush(color)
-            p.setPen(QPen(border, 1.2))
-            p.drawRoundedRect(cx - hr, yc - hr, hr * 2, hr * 2, 3, 3)
+            p.setBrush(qcolor("text") if active else qcolor("text_muted"))
+            p.setPen(QPen(qcolor("border_strong"), 1.2))
+            p.drawRoundedRect(cx - hr, yc - hr, hr * 2, hr * 2,
+                              RADIUS.sm, RADIUS.sm)
 
     def mousePressEvent(self, e):
         x = e.position().x()

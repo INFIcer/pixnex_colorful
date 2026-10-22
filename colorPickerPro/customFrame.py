@@ -1,16 +1,31 @@
 """
-自定义无边框窗口，支持标题栏、拖拽、缩放和折叠。
+无边框窗口基础设施
+==================
 
-提供：
-- PixmapWidget：双缓冲 QPixmap 显示控件
-- CustomFramelessWindow：可复用的无边框窗口基类
+- ``PixmapWidget``           双缓冲 QPixmap 显示控件
+- ``CustomFramelessWindow``  无边框窗口基类
+
+所有窗口统一使用 ``colorPickerPro.ui.components.FramelessWindowMixin`` 提供的
+自绘标题栏与 1px 边框；这里只补充“内容区替换 / 折叠 / 屏幕捕获矩形”这些屏幕
+滤镜窗口特有的能力。
 """
 
-from typing import Optional
+from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt, QRect, QPoint
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QCursor, QMouseEvent, QResizeEvent, QShortcut
-from PySide6.QtWidgets import QWidget, QLabel, QPushButton, QHBoxLayout
+import sys
+from pathlib import Path
+
+from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtGui import QPainter, QPixmap, QShortcut
+from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+if __name__ == "__main__" and (__package__ is None or __package__ == ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from colorPickerPro.ui.components import FramelessWindowMixin
+    from colorPickerPro.ui.tokens import SIZE, qcolor
+else:
+    from .ui.components import FramelessWindowMixin
+    from .ui.tokens import SIZE, qcolor
 
 
 class PixmapWidget(QWidget):
@@ -30,278 +45,135 @@ class PixmapWidget(QWidget):
     def paintEvent(self, e):
         if not self._pm.isNull():
             p = QPainter(self)
-            scaled = self._pm.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            scaled = self._pm.scaled(
+                self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             x = (self.width() - scaled.width()) // 2
             y = (self.height() - scaled.height()) // 2
             p.drawPixmap(x, y, scaled)
 
 
-class CustomFramelessWindow(QWidget):
-    """
-    可复用的无边框窗口，提供：
+class CustomFramelessWindow(FramelessWindowMixin, QWidget):
+    """可复用的无边框窗口（屏幕滤镜专用）。
 
-    - 带关闭和最小化按钮的标题栏
-    - 通过 add_title_bar_button() 插入自定义按钮
-    - 标题栏拖拽
-    - 边缘/角缩放
-    - 双击标题栏或按空格键折叠/展开
-    - 可配置的边框颜色
-    - 内容控件区域
+    提供：统一样式标题栏、边缘缩放、双击标题栏/空格键折叠、可替换内容区，
+    以及屏幕捕获需要的 ``content_rect_global()``。
     """
-
-    EDGE_MARGIN = 8
-    BTN_SIZE = 26
 
     def __init__(self, title: str = "Window", parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
-
-        self._drag_active = False
-        self._resize_active = False
-        self._resize_edge = 0
-        self._resize_start_geo = None
-        self._resize_start_global = None
-        self._drag_start = None
         self._collapsed = False
         self._restore_size = None
+        self._restore_min_height = 140
 
-        self._border_color = QColor(0, 120, 215)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(1, 1, 1, 1)
+        root.setSpacing(0)
 
-        self.setWindowFlags(
-            Qt.FramelessWindowHint | Qt.X11BypassWindowManagerHint
-        )
-        self.setAttribute(Qt.WA_OpaquePaintEvent)
-        self.setAttribute(Qt.WA_NoSystemBackground)
-        self.setMouseTracking(True)
+        self._title_bar = self.init_frameless(
+            title, layout=root, show_minimize=True, show_maximize=False,
+            show_close=True, resizable=True, double_click="collapse",
+            border_color=qcolor("accent"))
+
+        self._content_host = QWidget(self)
+        self._content_host.setObjectName("FramelessBody")
+        self._content_layout = QVBoxLayout(self._content_host)
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.setSpacing(0)
+        root.addWidget(self._content_host, 1)
+
+        self._content: QWidget = QWidget(self._content_host)
+        self._content_layout.addWidget(self._content)
+
         self.resize(480, 360)
-        self.setMinimumSize(200, 120)
+        self.setMinimumSize(280, 140)
+        QShortcut(Qt.Key_Space, self, self.toggle_collapse)
 
-        self._setup_style()
-        self._build_title_bar()
-        self._content = QWidget(self)
-        self._content.setAutoFillBackground(True)
-        self._content.setMouseTracking(True)
-        self._content.installEventFilter(self)
-
-        QShortcut(Qt.Key_Space, self, self._toggle_collapse)
-
-    def _setup_style(self):
-        self.setStyleSheet("""
-            #_customFrameWin { background-color: #1a1a1a; }
-            #titleBar { background-color: #2a2a2a; }
-        """)
-        self.setObjectName("_customFrameWin")
-
-    def _build_title_bar(self):
-        self._title_bar = QWidget(self)
-        self._title_bar.setObjectName("titleBar")
-        self._title_bar.setFixedHeight(32)
-
-        self._title_lbl = QLabel(f"  {self.windowTitle()}", self._title_bar)
-        self._title_lbl.setStyleSheet(
-            "color:white;font-size:13px;font-weight:bold;background:transparent;"
-        )
-        self._title_lbl.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-
-        self._btn_min = QPushButton("\u2500", self._title_bar)
-        self._btn_min.setFixedSize(self.BTN_SIZE, self.BTN_SIZE)
-        self._btn_min.setStyleSheet(self._btn_style("#555"))
-
-        self._btn_close = QPushButton("\u2715", self._title_bar)
-        self._btn_close.setFixedSize(self.BTN_SIZE, self.BTN_SIZE)
-        self._btn_close.setStyleSheet(self._btn_style("#C33"))
-
-        self._btn_min.clicked.connect(self.showMinimized)
-        self._btn_close.clicked.connect(self.close)
-
-        self._title_layout = QHBoxLayout(self._title_bar)
-        self._title_layout.setContentsMargins(4, 0, 4, 0)
-        self._title_layout.setSpacing(2)
-        self._title_layout.addWidget(self._title_lbl)
-        self._title_layout.addStretch()
-        self._title_layout.addWidget(self._btn_min)
-        self._title_layout.addWidget(self._btn_close)
-
-        self._title_bar.setMouseTracking(True)
-        self._title_bar.installEventFilter(self)
-
-    def add_title_bar_button(self, btn: QPushButton) -> QPushButton:
-        # pos = self._title_layout.count() - 2
-        self._title_layout.insertWidget(2, btn)
-        return btn
-
+    # ---- 内容区 ---------------------------------------------------------
     def content_widget(self) -> QWidget:
         return self._content
 
     def set_content_widget(self, w: QWidget):
+        """替换内容控件；旧控件会被销毁。"""
         old = self._content
         self._content = w
-        self._content.setParent(self)
-        self._content.setMouseTracking(True)
-        self._content.installEventFilter(self)
+        w.setParent(self._content_host)
+        self._content_layout.addWidget(w)
+        w.show()
         if old is not None:
+            self._content_layout.removeWidget(old)
             old.deleteLater()
 
-    def set_title(self, title: str):
-        self._title_lbl.setText(f"  {title}")
+    def content_rect_global(self) -> QRect:
+        """内容区在屏幕上的全局矩形（屏幕捕获窗口据此取像素）。"""
+        return QRect(self._content.mapToGlobal(QPoint(0, 0)), self._content.size())
 
-    def set_border_color(self, color: QColor):
-        self._border_color = color
-        self.update()
+    # ---- 标题栏 ---------------------------------------------------------
+    def add_title_bar_button(self, btn: QWidget) -> QWidget:
+        return self.title_bar.add_button(btn)
+
+    def set_title(self, title: str):
+        self.set_window_title(title)
+
+    def set_subtitle(self, subtitle: str):
+        self.set_window_subtitle(subtitle)
 
     def _should_allow_resize(self) -> bool:
         return True
 
-    # ---- 事件处理 -----------------------------------------------------
+    def _can_resize(self) -> bool:
+        return super()._can_resize() and self._should_allow_resize()
 
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.MouseMove:
-            self.mouseMoveEvent(event)
-            return False
-        return super().eventFilter(obj, event)
+    def is_collapsed(self) -> bool:
+        return self._collapsed
 
-    def resizeEvent(self, e: QResizeEvent):
-        super().resizeEvent(e)
-        w, h = e.size().width(), e.size().height()
-        self._title_bar.resize(w, 32)
-        self._content.setGeometry(4, 36, w - 8, h - 40)
-
-    def _edge_at(self, pos: QPoint) -> Optional[int]:
-        r, m = self.rect(), self.EDGE_MARGIN
-        e = Qt.Edge(0)
-        if pos.x() <= m:
-            e |= Qt.LeftEdge
-        if pos.x() >= r.width() - m:
-            e |= Qt.RightEdge
-        if pos.y() <= m:
-            e |= Qt.TopEdge
-        if pos.y() >= r.height() - m:
-            e |= Qt.BottomEdge
-        return e if e else None
-
-    @staticmethod
-    def _resize_cursor(edge: int) -> Qt.CursorShape:
-        if edge in (Qt.LeftEdge | Qt.TopEdge, Qt.RightEdge | Qt.BottomEdge):
-            return Qt.SizeFDiagCursor
-        if edge in (Qt.RightEdge | Qt.TopEdge, Qt.LeftEdge | Qt.BottomEdge):
-            return Qt.SizeBDiagCursor
-        if edge in (Qt.LeftEdge, Qt.RightEdge):
-            return Qt.SizeHorCursor
-        return Qt.SizeVerCursor
-
-    def mousePressEvent(self, e: QMouseEvent):
-        if e.button() != Qt.LeftButton:
-            return
-        pos = e.position().toPoint()
-        if self._should_allow_resize() and not self._collapsed:
-            edge = self._edge_at(pos)
-            if edge:
-                self._resize_active = True
-                self._resize_edge = edge
-                self._resize_start_geo = self.geometry()
-                self._resize_start_global = e.globalPosition().toPoint()
-                self.setCursor(self._resize_cursor(edge))
-                e.accept()
-                return
-
-        if pos.y() < 32:
-            self._drag_active = True
-            self._drag_start = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            self.setCursor(Qt.ClosedHandCursor)
-            e.accept()
-            return
-
-    def mouseMoveEvent(self, e: QMouseEvent):
-        gpos = e.globalPosition().toPoint()
-        local_pos = self.mapFromGlobal(gpos)
-        if self._drag_active and self._drag_start is not None:
-            self.move(gpos - self._drag_start)
-            e.accept()
-            return
-
-        if self._resize_active:
-            delta = gpos - self._resize_start_global
-            g = QRect(self._resize_start_geo)
-            ed = self._resize_edge
-            if ed & Qt.LeftEdge:
-                g.setLeft(g.left() + delta.x())
-            if ed & Qt.RightEdge:
-                g.setRight(g.right() + delta.x())
-            if ed & Qt.TopEdge:
-                g.setTop(g.top() + delta.y())
-            if ed & Qt.BottomEdge:
-                g.setBottom(g.bottom() + delta.y())
-            if g.width() >= self.minimumWidth() and g.height() >= self.minimumHeight():
-                self.setGeometry(g)
-            e.accept()
-            return
-
-        edge = self._edge_at(local_pos)
-        if edge and self._should_allow_resize() and not self._collapsed:
-            self.setCursor(self._resize_cursor(edge))
-        else:
-            self.setCursor(Qt.ArrowCursor)
-
-    def mouseReleaseEvent(self, e: QMouseEvent):
-        if e.button() == Qt.LeftButton:
-            self._drag_active = False
-            self._resize_active = False
-            self._resize_edge = 0
-            self._resize_start_geo = None
-            self._resize_start_global = None
-            self._drag_start = None
-            self.setCursor(Qt.ArrowCursor)
-            e.accept()
-
-    def mouseDoubleClickEvent(self, e: QMouseEvent):
-        if e.button() == Qt.LeftButton and e.position().toPoint().y() < 32:
-            self._toggle_collapse()
-
-    def paintEvent(self, e):
-        p = QPainter(self)
-
-        if self._collapsed:
-            p.setPen(QPen(QColor(0, 120, 215), 1))
-            p.drawLine(2, 31, self.width() - 2, 31)
-        else:
-            p.setBrush(Qt.NoBrush)
-            p.setPen(QPen(self._border_color, 2))
-            r = self._content.geometry().adjusted(-4, -4, 4, 4)
-            p.drawRect(r.adjusted(1, 1, -1, -1))
-
-    def _toggle_collapse(self):
+    # ---- 折叠 -----------------------------------------------------------
+    def toggle_collapse(self):
         if self._collapsed:
             self._collapsed = False
-            self.setMinimumSize(200, 120)
-            self._content.show()
+            self._content_host.show()
+            self.setMinimumHeight(self._restore_min_height)
+            self.setMaximumHeight(16777215)
             if self._restore_size is not None:
-                g = self.geometry()
-                self.setGeometry(g.x(), g.y(), self._restore_size.width(), self._restore_size.height())
+                position = self.geometry()
+                self.resize(self._restore_size)
+                self.move(position.x(), position.y())
                 self._restore_size = None
+            self.update()
         else:
             self._collapsed = True
-            self._restore_size = self.geometry().size()
-            self.setMinimumSize(0, 0)
-            self._content.hide()
-            g = self.geometry()
-            self.setGeometry(g.x(), g.y(), g.width(), 32)
+            self._restore_min_height = self.minimumHeight()
+            self._restore_size = self.size()
+            self._content_host.hide()
+            collapsed_height = SIZE.title_bar_height + 2
+            self.setMinimumHeight(collapsed_height)
+            self.setMaximumHeight(collapsed_height)
+            self.update()
 
-    @staticmethod
-    def _btn_style(bg: str) -> str:
-        return (
-            f"QPushButton{{background:rgba(40,40,40,180);color:white;"
-            f"border:none;font-size:13px;border-radius:4px;}}"
-            f"QPushButton:hover{{background:{bg};}}"
-        )
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._collapsed:
+            collapsed_height = SIZE.title_bar_height + 2
+            if self.height() != collapsed_height:
+                self.setFixedHeight(collapsed_height)
 
 
 def run_demo():
-    from PySide6.QtWidgets import QApplication  
-    import sys
-    app = QApplication.instance() or QApplication(sys.argv)
-    demo = CustomFramelessWindow()
+    from PySide6.QtWidgets import QApplication
+
+    if __name__ == "__main__" and (__package__ is None or __package__ == ""):
+        from colorPickerPro.ui import apply_theme, configure_application
+    else:
+        from .ui import apply_theme, configure_application
+
+    configure_application()
+    app = QApplication.instance() or QApplication([])
+    apply_theme(app)
+    demo = CustomFramelessWindow("无边框窗口")
     demo.show()
-    sys.exit(app.exec())
+    app.exec()
+
 
 if __name__ == "__main__":
     run_demo()

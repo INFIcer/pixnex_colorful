@@ -8,18 +8,30 @@
 左侧列出所有可用滤镜，右侧列出已保存的滤镜方案。选中左侧滤镜时，相当于
 “用一个只含该滤镜的方案”（替换原先直接创建滤镜的行为）；选中右侧方案时，
 直接使用该方案。删除方案的功能放在本列表中。
+
+界面全部由 ``colorPickerPro.ui`` 设计系统组合而成：两列放在 ``QSplitter``
+里（各自有最小宽度，窄窗口也能拖动分配），说明文字用 ``CaptionLabel``，
+删除 / 刷新用 ``DangerButton`` / ``GhostButton``，弹窗外壳是 ``ThemedDialog``。
 """
 
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QListWidget, QListWidgetItem, QMessageBox, QAbstractItemView,
+    QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QSplitter,
+    QAbstractItemView, QDialog,
 )
 
 from .filter_lib import ImageFilter
 from .filter_scheme import FilterScheme, get_scheme_store
+from .ui.components import (
+    CaptionLabel, DangerButton, GhostButton, PrimaryButton, ThemedDialog,
+    alert, confirm, hbox, vbox,
+)
+from .ui.tokens import SPACE
+
+# 两列列表的最小宽度：再窄就放不下滤镜名/方案名，由分栏保证可读性
+_LIST_MIN_WIDTH = 176
 
 
 class FilterSchemeSelectorWidget(QWidget):
@@ -45,59 +57,44 @@ class FilterSchemeSelectorWidget(QWidget):
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(4)
+        root.setSpacing(SPACE.xs)
 
-        row = QHBoxLayout()
-        row.setSpacing(8)
+        splitter = QSplitter(Qt.Horizontal, self)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(SPACE.sm)
 
         # 左：滤镜库
-        left = QVBoxLayout()
-        left.setSpacing(2)
-        cap_l = QLabel("滤镜库（选中即新建只含该滤镜的方案）")
-        cap_l.setStyleSheet("color: #999; font-size: 11px;")
-        left.addWidget(cap_l)
-
-        self._filter_list = QListWidget()
+        left_host = QWidget(splitter)
+        cap_l = CaptionLabel("滤镜库", word_wrap=True)
+        self._filter_list = QListWidget(left_host)
+        self._filter_list.setToolTip("选中滤镜即新建该滤镜的方案")
+        self._filter_list.setMinimumWidth(_LIST_MIN_WIDTH)
         self._setup_list(self._filter_list)
-        left.addWidget(self._filter_list, 1)
-        row.addLayout(left, 1)
+        left_host.setLayout(vbox(cap_l, self._filter_list, spacing=SPACE.xs,
+                                 stretch=1))
 
-        # 右：已保存方案
-        right = QVBoxLayout()
-        right.setSpacing(2)
-        cap_r = QLabel("已保存方案")
-        cap_r.setStyleSheet("color: #999; font-size: 11px;")
-        right.addWidget(cap_r)
-
-        self._scheme_list = QListWidget()
+        # 右：已保存方案 + 删除 / 刷新
+        right_host = QWidget(splitter)
+        cap_r = CaptionLabel("已保存方案", word_wrap=True)
+        self._scheme_list = QListWidget(right_host)
+        self._scheme_list.setMinimumWidth(_LIST_MIN_WIDTH)
         self._setup_list(self._scheme_list)
-        right.addWidget(self._scheme_list, 1)
 
-        btns = QHBoxLayout()
-        btns.setSpacing(4)
-        self._btn_delete = QPushButton("🗑 删除方案")
-        self._btn_delete.setStyleSheet(self._btn_style("#E53935"))
-        self._btn_delete.setCursor(Qt.PointingHandCursor)
+        self._btn_delete = DangerButton("删除方案", tooltip="删除选中方案")
         self._btn_delete.clicked.connect(self.delete_current_scheme)
-        btns.addWidget(self._btn_delete)
-
-        self._btn_refresh = QPushButton("↻ 刷新")
-        self._btn_refresh.setStyleSheet(self._btn_style("#455A64"))
-        self._btn_refresh.setCursor(Qt.PointingHandCursor)
+        self._btn_refresh = GhostButton("刷新", tooltip="重新读取列表")
         self._btn_refresh.clicked.connect(self.refresh)
-        btns.addWidget(self._btn_refresh)
-        btns.addStretch()
-        right.addLayout(btns)
-        row.addLayout(right, 1)
+        buttons = hbox(self._btn_delete, self._btn_refresh, None, spacing=SPACE.xs)
 
-        root.addLayout(row)
+        right_layout = vbox(cap_r, self._scheme_list, buttons, spacing=SPACE.xs,
+                            stretch=1)
+        right_host.setLayout(right_layout)
 
-        self.setStyleSheet("""
-            QListWidget { background: #2a2a2a; color: #ddd; border: 1px solid #444;
-                          border-radius: 3px; font-size: 12px; }
-            QListWidget::item { padding: 4px 6px; }
-            QListWidget::item:selected { background: #5C6BC0; color: white; }
-        """)
+        splitter.addWidget(left_host)
+        splitter.addWidget(right_host)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        root.addWidget(splitter, 1)
 
     def _setup_list(self, widget: QListWidget):
         if self._multi:
@@ -107,12 +104,6 @@ class FilterSchemeSelectorWidget(QWidget):
         widget.itemClicked.connect(lambda item, w=widget: self._on_item_picked(w))
         widget.currentRowChanged.connect(lambda row, w=widget: self._on_row_changed(row, w))
         widget.itemDoubleClicked.connect(lambda item, w=widget: self._on_double_clicked(w))
-
-    @staticmethod
-    def _btn_style(color: str) -> str:
-        return (f"QPushButton {{ padding: 4px 10px; font-size: 11px; background-color: {color};"
-                " color: white; border: none; border-radius: 3px; }"
-                "QPushButton:hover { background-color: #3a3a3a; }")
 
     # ---------- 数据 ----------
 
@@ -233,18 +224,16 @@ class FilterSchemeSelectorWidget(QWidget):
     def delete_current_scheme(self) -> bool:
         item = self._scheme_list.currentItem()
         if item is None:
-            QMessageBox.information(self.window(), "删除方案", "请先选择一个已保存方案")
+            alert(self.window(), "删除方案", "请先选择方案")
             return False
         name = item.data(Qt.UserRole)
-        ret = QMessageBox.question(self.window(), "删除方案",
-                                   f"确定删除方案「{name}」？")
-        if ret != QMessageBox.Yes:
+        if not confirm(self.window(), "删除方案", f"确定删除方案「{name}」？"):
             return False
         self._store.remove(name)
         if not self._store.save():
-            QMessageBox.warning(self.window(), "删除方案",
-                                f"写入方案文件失败：\n{self._store.path}\n\n"
-                                f"原因：{self._store.last_error or '未知错误'}")
+            alert(self.window(), "删除方案",
+                  f"写入方案文件失败：\n{self._store.path}\n\n"
+                  f"原因：{self._store.last_error or '未知错误'}")
         self.refresh()
         self.schemesChanged.emit()
         return True
@@ -254,59 +243,30 @@ class FilterSchemeSelectorWidget(QWidget):
         self.refresh()
 
 
-class FilterSchemeSelectorDialog(QDialog):
+class FilterSchemeSelectorDialog(ThemedDialog):
     """滤镜 / 方案选择弹窗（两个列表）。"""
 
     def __init__(self, parent=None, title: str = "选择滤镜或滤镜方案",
                  multi_select: bool = False, store=None):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.setMinimumSize(620, 420)
+        # 单选的说明已在标题与列标题里，副标题只给多选模式补充一句
+        subtitle = "可多选，用于对比" if multi_select else ""
+        super().__init__(title, subtitle, parent)
         self.setModal(True)
+        self.setMinimumSize(560, 400)
+        self.resize(640, 470)
 
         self._multi = bool(multi_select)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(8)
-
-        tip_text = ("可同时选择多个滤镜与方案进行对比" if multi_select
-                    else "左：滤镜库（选中即创建只含该滤镜的方案）　右：已保存方案（可删除）")
-        tip = QLabel(tip_text)
-        tip.setStyleSheet("color: #888; font-size: 11px;")
-        tip.setWordWrap(True)
-        root.addWidget(tip)
-
         self._selector = FilterSchemeSelectorWidget(multi_select=multi_select,
                                                     store=store, parent=self)
-        root.addWidget(self._selector, 1)
+        self.add_content(self._selector, 1)
 
-        btns = QHBoxLayout()
-        btns.addStretch()
-
-        ok = QPushButton("确定")
-        ok.setStyleSheet("""
-            QPushButton { padding: 8px 26px; font-size: 13px; font-weight: bold;
-                background-color: #26A69A; color: white; border: none; border-radius: 6px; }
-            QPushButton:hover { background-color: #00897B; }
-        """)
-        ok.setCursor(Qt.PointingHandCursor)
-        ok.clicked.connect(self._on_accept)
-        btns.addWidget(ok)
-
-        cancel = QPushButton("取消")
-        cancel.setStyleSheet("""
-            QPushButton { padding: 8px 26px; font-size: 13px;
-                background-color: #424242; color: #ccc; border: none; border-radius: 6px; }
-            QPushButton:hover { background-color: #555; color: white; }
-        """)
-        cancel.setCursor(Qt.PointingHandCursor)
-        cancel.clicked.connect(self.reject)
-        btns.addWidget(cancel)
-        btns.addStretch()
-        root.addLayout(btns)
-
-        self.setStyleSheet("QDialog { background-color: #1e1e1e; }")
+        self._btn_cancel = self.add_reject_button("取消")
+        self._btn_ok = PrimaryButton("确定", self)
+        self._btn_ok.setDefault(True)
+        self._btn_ok.setAutoDefault(True)
+        self._btn_ok.clicked.connect(self._on_accept)
+        self.footer.add(self._btn_ok)
 
     @property
     def selector(self) -> FilterSchemeSelectorWidget:
@@ -321,10 +281,10 @@ class FilterSchemeSelectorDialog(QDialog):
     def _on_accept(self):
         if self._multi:
             if not self._selector.selected_schemes():
-                QMessageBox.information(self, "提示", "请至少选择一个滤镜或方案")
+                alert(self, "提示", "请至少选择一项")
                 return
         elif self._selector.current_scheme() is None:
-            QMessageBox.information(self, "提示", "请选择一个滤镜或已保存方案")
+            alert(self, "提示", "请选择滤镜或方案")
             return
         self.accept()
 
@@ -333,8 +293,11 @@ def run_demo():
     import sys
     from PySide6.QtWidgets import QApplication
 
+    from .ui import apply_theme, configure_application
+
+    configure_application()
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setStyle("Fusion")
+    apply_theme(app)
 
     dlg = FilterSchemeSelectorDialog(None, "滤镜 / 方案选择演示")
     if dlg.exec() == QDialog.Accepted:

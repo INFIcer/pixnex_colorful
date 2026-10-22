@@ -36,10 +36,34 @@ for name in essential_plugins:
     if src.is_dir():
         plugin_datas.append((str(src), str(Path('PySide6', 'plugins', name))))
 
+# UI 主题样式表按 __file__ 相对路径加载 assets 里的单色图标，
+# 打包时必须把这些非 Python 文件一起带进产物目录。
+ui_assets_dir = Path('colorPickerPro', 'ui', 'assets')
+if ui_assets_dir.is_dir():
+    plugin_datas.append(
+        (str(ui_assets_dir), str(Path('colorPickerPro', 'ui', 'assets'))))
+
+# theme.apply_theme() 会加载 Qt 自带的简体中文翻译，让系统文件对话框等
+# 标准控件的按钮也显示中文。只收集需要的 .qm。
+qt_translations = pyside6_dir / 'translations'
+for qm_name in ('qtbase_zh_CN.qm', 'qt_zh_CN.qm'):
+    qm_file = qt_translations / qm_name
+    if qm_file.is_file():
+        plugin_datas.append(
+            (str(qm_file), str(Path('PySide6', 'translations'))))
+
+# 主题图标是 SVG：需要 QtSvg 运行库 + imageformats/qsvg 插件。
+# 插件目录由 datas 整体带入，这里显式收集它依赖的 DLL。
+svg_binaries = []
+for dll_name in ('Qt6Svg.dll',):
+    dll_path = pyside6_dir / dll_name
+    if dll_path.is_file():
+        svg_binaries.append((str(dll_path), '.'))
+
 a = Analysis(
     ['colorPickerPro.py'],
     pathex=[],
-    binaries=[],
+    binaries=svg_binaries,
     datas=plugin_datas,
     hiddenimports=[
         'PySide6.QtCore',
@@ -47,6 +71,7 @@ a = Analysis(
         'PySide6.QtWidgets',
         'PySide6.QtOpenGL',
         'PySide6.QtOpenGLWidgets',
+        'PySide6.QtSvg',
         'shiboken6',
         'pymem',
         'pymem.process',
@@ -79,7 +104,6 @@ a = Analysis(
         'PySide6.QtTextToSpeech',
         'PySide6.QtWebSockets',
         'PySide6.QtXml',
-        'PySide6.QtSvg',
         'PySide6.QtSvgWidgets',
         'PySide6.QtDataVisualization',
         'PySide6.QtCharts',

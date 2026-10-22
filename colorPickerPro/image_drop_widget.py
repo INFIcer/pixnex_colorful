@@ -1,35 +1,72 @@
+"""图像拖放区：拖入文件 / 拖入图像 / Ctrl+V 粘贴，都可读取图像。
+
+外观完全自绘（虚线圆角边框 + 面板底色 + 拖拽高亮），颜色、圆角、字号全部来自
+设计令牌，本文件不写内联样式表。``dragActive`` 是动态属性：拖拽进入时置为
+True 并 repolish，样式表 / 自绘都能据此切换高亮态。
+"""
+
 import os
 import sys
 
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QSizePolicy
-from PySide6.QtCore import Qt, Signal, QRectF
+from PySide6.QtCore import QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
-    QPixmap, QPainter, QColor, QPen, QFont, QKeySequence, QImage,
-    QDragEnterEvent, QDragMoveEvent, QDragLeaveEvent, QDropEvent,
+    QColor, QDragEnterEvent, QDragLeaveEvent, QDragMoveEvent, QDropEvent, QFont,
+    QImage, QKeySequence, QPainter, QPen, QPixmap,
 )
+from PySide6.QtWidgets import (
+    QApplication, QSizePolicy, QVBoxLayout, QWidget,
+)
+
+from .ui.components import CaptionLabel, SubtitleLabel, TitleLabel
+from .ui.theme import ensure_theme, repolish
+from .ui.tokens import RADIUS, SPACE, TYPE, qcolor
+
+
+def _soft_accent() -> QColor:
+    """accent 的低透明度版本（令牌里的 accent_soft 是 CSS 字符串，绘制时用 QColor）。"""
+    color = qcolor("accent")
+    color.setAlpha(40)
+    return color
+
+
+def _elide(painter: QPainter, text: str, rect: QRectF) -> str:
+    """小尺寸下用省略号代替被裁掉的文字（拖放区宽度随窗口变化）。"""
+    available = max(0, int(rect.width()) - SPACE.sm * 2)
+    if available <= 0:
+        return text
+    return painter.fontMetrics().elidedText(
+        text, Qt.TextElideMode.ElideRight, available)
 
 
 class ImageDropWidget(QWidget):
     imageReceived = Signal(object, str)
 
-    def __init__(self, placeholder_text="在此处粘贴或拖入图像",
-                 drop_hint="释放以读取图像", parent=None):
+    def __init__(self, placeholder_text="拖入或粘贴图像",
+                 drop_hint="释放以载入", parent=None):
         super().__init__(parent)
         self._placeholder_text = placeholder_text
         self._drop_hint_text = drop_hint
         self._pixmap = QPixmap()
         self._drag_hover = False
 
-        self._placeholder_font = QFont("Microsoft YaHei", 9)
-        self._drop_hint_font = QFont("Microsoft YaHei", 10)
+        self._placeholder_font = QFont(TYPE.family)
+        self._placeholder_font.setPixelSize(TYPE.caption_px)
+        self._drop_hint_font = QFont(TYPE.family)
+        self._drop_hint_font.setPixelSize(TYPE.body_px)
         self._drop_hint_font.setBold(True)
-        self._placeholder_color = QColor(150, 150, 150)
-        self._drop_hint_color = QColor(0, 120, 215)
+        self._placeholder_color = qcolor("text_muted")
+        self._drop_hint_color = qcolor("accent")
 
         self.setAcceptDrops(True)
-        self.setFocusPolicy(Qt.StrongFocus)
-        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setProperty("dragActive", False)
+        self.setMinimumHeight(44)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Preferred)
 
+    # ------------------------------------------------------------------
+    # 文本 / 图像
+    # ------------------------------------------------------------------
     @property
     def placeholder_text(self) -> str:
         return self._placeholder_text
@@ -69,35 +106,80 @@ class ImageDropWidget(QWidget):
     def pixmap(self) -> QPixmap:
         return self._pixmap
 
+    # ------------------------------------------------------------------
+    # 尺寸
+    # ------------------------------------------------------------------
+    def sizeHint(self) -> QSize:  # noqa: N802 (Qt API)
+        return QSize(240, 88)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 (Qt API)
+        return QSize(120, 44)
+
+    # ------------------------------------------------------------------
+    # 绘制
+    # ------------------------------------------------------------------
+    def _set_drag_active(self, active: bool):
+        if self._drag_hover == active:
+            return
+        self._drag_hover = active
+        self.setProperty("dragActive", active)
+        repolish(self)
+        self.update()
+
     def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-        if self._drag_hover:
-            p.fillRect(self.rect(), QColor(30, 42, 58))
-            overlay = QColor(0, 120, 215, 30)
-            p.fillRect(self.rect(), overlay)
-            pen = QPen(QColor(0, 120, 215), 2)
-            pen.setStyle(Qt.DashLine)
-            p.setPen(pen)
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 8, 8)
-            p.setPen(self._drop_hint_color)
-            p.setFont(self._drop_hint_font)
-            p.drawText(self.rect(), Qt.AlignCenter, self._drop_hint_text)
+        outer = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
+        active = bool(self.property("dragActive"))
+
+        if active:
+            painter.setBrush(_soft_accent())
+            pen = QPen(qcolor("accent"), 2)
         else:
-            p.fillRect(self.rect(), QColor(26, 26, 26))
-            pen = QPen(QColor(85, 85, 85), 2)
-            pen.setStyle(Qt.DashLine)
-            p.setPen(pen)
-            p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 8, 8)
-            p.setPen(self._placeholder_color)
-            p.setFont(self._placeholder_font)
-            p.drawText(self.rect(), Qt.AlignCenter, self._placeholder_text)
+            painter.setBrush(qcolor("surface"))
+            pen = QPen(qcolor("accent") if self.hasFocus()
+                       else qcolor("border_strong"), 1)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        painter.drawRoundedRect(outer, RADIUS.lg, RADIUS.lg)
 
+        inner = outer.adjusted(SPACE.sm, SPACE.sm, -SPACE.sm, -SPACE.sm)
+        if not self._pixmap.isNull() and inner.width() > 0 and inner.height() > 0:
+            scaled = self._pixmap.scaled(
+                inner.size().toSize(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            target = QRectF(0, 0, scaled.width(), scaled.height())
+            target.moveCenter(inner.center())
+            painter.drawPixmap(target.toRect(), scaled)
+
+        if active:
+            painter.setPen(self._drop_hint_color)
+            painter.setFont(self._drop_hint_font)
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                             _elide(painter, self._drop_hint_text, outer))
+        elif self._pixmap.isNull():
+            painter.setPen(self._placeholder_color)
+            painter.setFont(self._placeholder_font)
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                             _elide(painter, self._placeholder_text, outer))
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self.update()
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self.update()
+
+    # ------------------------------------------------------------------
+    # 拖放 / 键盘
+    # ------------------------------------------------------------------
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls() or event.mimeData().hasImage():
-            self._drag_hover = True
-            self.update()
+            self._set_drag_active(True)
             event.acceptProposedAction()
 
     def dragMoveEvent(self, event: QDragMoveEvent):
@@ -105,17 +187,15 @@ class ImageDropWidget(QWidget):
             event.acceptProposedAction()
 
     def dragLeaveEvent(self, event: QDragLeaveEvent):
-        self._drag_hover = False
-        self.update()
+        self._set_drag_active(False)
 
     def dropEvent(self, event: QDropEvent):
-        self._drag_hover = False
+        self._set_drag_active(False)
         self._process_mime_data(event.mimeData())
-        self.update()
         event.acceptProposedAction()
 
     def keyPressEvent(self, event):
-        if event.matches(QKeySequence.Paste):
+        if event.matches(QKeySequence.StandardKey.Paste):
             self._paste_from_clipboard()
         else:
             super().keyPressEvent(event)
@@ -159,38 +239,35 @@ class ImageDropWidget(QWidget):
 
 def run_demo():
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setStyle("Fusion")
+    ensure_theme(app)
 
     window = QWidget()
     window.setWindowTitle("图像拖放控件演示")
     window.resize(500, 400)
-    window.setStyleSheet("background-color: #1a1a1a;")
 
     layout = QVBoxLayout(window)
     layout.setContentsMargins(20, 20, 20, 20)
     layout.setSpacing(12)
 
-    label = QLabel("将图像文件拖入下方区域，或点击区域后按 Ctrl+V 粘贴")
-    label.setStyleSheet("color: #ccc; font-size: 13px;")
-    label.setAlignment(Qt.AlignCenter)
-    layout.addWidget(label)
+    layout.addWidget(TitleLabel("图像拖放区"))
+    layout.addWidget(SubtitleLabel("拖入图像，或按 Ctrl+V 粘贴"))
 
     drop_widget = ImageDropWidget()
     layout.addWidget(drop_widget, 1)
 
-    info = QLabel("等待图像...")
-    info.setStyleSheet("color: #999; font-size: 12px;")
-    info.setAlignment(Qt.AlignCenter)
+    info = CaptionLabel("等待图像")
+    info.setAlignment(Qt.AlignmentFlag.AlignCenter)
     layout.addWidget(info)
 
     def on_image(pixmap, name):
-        text = f"已载入图像"
+        text = "已载入"
         if name:
-            text += f": {name}"
-        text += f"  ({pixmap.width()}×{pixmap.height()})"
+            text += f"：{name}"
+        text += f"（{pixmap.width()}×{pixmap.height()}）"
         info.setText(text)
 
     drop_widget.imageReceived.connect(on_image)
+    drop_widget.setFocus()
 
     window.show()
     sys.exit(app.exec())

@@ -1,14 +1,24 @@
 import numpy as np
 from abc import ABC, abstractmethod
-from PySide6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QSlider, QDoubleSpinBox, QFrame, QPushButton, QSizePolicy
-)
-from PySide6.QtCore import Qt, Signal, QRectF, QPointF
+from PySide6.QtWidgets import QApplication, QWidget, QDoubleSpinBox, QSizePolicy
+from PySide6.QtCore import QRectF, QPointF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
-    QColor, QPainter, QLinearGradient, QConicalGradient, QPen, QBrush,
-    QPixmap, QImage
+    QColor, QPainter, QConicalGradient, QPen, QPixmap, QImage
 )
+
+from .ui.components import (
+    ColorSwatch,
+    FieldLabel,
+    MonoLabel,
+    PrimaryButton,
+    SecondaryButton,
+    StatusLabel,
+    ValueLabel,
+    flow,
+    hbox,
+    vbox,
+)
+from .ui.tokens import SPACE, State, qcolor
 
 from .colorMath import (
     srgb_gamma_inv, linear_to_srgb_clamped,
@@ -45,9 +55,6 @@ class BaseColorModel(ABC):
     @property
     @abstractmethod
     def name(self) -> str: ...
-    @property
-    @abstractmethod
-    def description(self) -> str: ...
     @property
     @abstractmethod
     def param_names(self) -> list: ...
@@ -127,6 +134,14 @@ class BaseColorModel(ABC):
     def add_listener(self, callback):
         self._listeners.append(callback)
 
+    def remove_listener(self, callback) -> bool:
+        """摘除一个监听回调；回调不在列表里时安全返回 False。"""
+        try:
+            self._listeners.remove(callback)
+            return True
+        except ValueError:
+            return False
+
     def _notify(self, source=None):
         for cb in self._listeners:
             cb(self, source)
@@ -134,7 +149,6 @@ class BaseColorModel(ABC):
 
 class OKLCHModel(BaseColorModel):
     name = "OKLCH"
-    description = "基于感知均匀的 OKLab 色彩空间，L(明度) 0-1，C(彩度) 0-0.4，H(色相) 0-360°。\n比传统 HSV/HSL 更符合人眼感知，但部分颜色超出 sRGB 色域。"
     param_names = ["L", "C", "H"]
     param_ranges = [(0, 1), (0, OKLCH_C_MAX), (0, 360)]
     param_decimals = [3, 3, 1]
@@ -161,7 +175,6 @@ class OKLCHModel(BaseColorModel):
 
 class HSVModel(BaseColorModel):
     name = "HSV"
-    description = "色相 H 0-360°，饱和度 S 0-1，明度 V 0-1。最常用的颜色模型，直观且完全在 sRGB 色域内。\n但感知上不线性——明度变化时色相和饱和度感知也会偏移。"
     param_names = ["H", "S", "V"]
     param_ranges = [(0, 360), (0, 1), (0, 1)]
     param_decimals = [1, 3, 3]
@@ -184,7 +197,6 @@ class HSVModel(BaseColorModel):
 
 class CIELCHModel(BaseColorModel):
     name = "CIE LCH"
-    description = "以 CIE Lab 为基础的极坐标形式，L(明度) 0-100，C(彩度) 0-150，H(色相) 0-360°。\n国际照明委员会(CIE)标准色彩空间，感知均匀，常作为颜色科学参考标准。"
     param_names = ["L", "C", "H"]
     param_ranges = [(0, 100), (0, CIE_LCH_C_MAX), (0, 360)]
     param_decimals = [1, 1, 1]
@@ -208,7 +220,6 @@ class CIELCHModel(BaseColorModel):
 
 class CIELabModel(BaseColorModel):
     name = "CIE Lab"
-    description = "L(明度) 0-100，a(绿到红) -128~127，b(蓝到黄) -128~127。\nCIE 标准绝对色彩空间，设备无关，色域覆盖人眼可视范围。a×b 平面展示色度分布。"
     param_names = ["L", "a", "b"]
     param_ranges = [(0, 100), (-128, 127), (-128, 127)]
     param_decimals = [1, 1, 1]
@@ -231,7 +242,6 @@ class CIELabModel(BaseColorModel):
 
 class HSIModel(BaseColorModel):
     name = "HSI"
-    description = "色相 H 0-360°，饱和度 S 0-1，强度 I 0-1。I = (R+G+B)/3。\n标准 HSI 定义，饱和度基于最小分量与亮度和之比，色相用三角法计算。在图像分割中更稳定。"
     param_names = ["H", "S", "I"]
     param_ranges = [(0, 360), (0, 1), (0, 1)]
     param_decimals = [1, 3, 3]
@@ -258,9 +268,24 @@ ALL_MODELS = {
 
 
 # =============================================================================
+# 表现层尺寸常量
+# =============================================================================
+# 渐变色条是「数据即颜色」的小型可视化控件，固定高度属于设计规范 §3.3 的例外。
+STRIP_HEIGHT = 24
+STRIP_MIN_WIDTH = 60
+# 数值输入框本身就是小尺寸控件，保留较小的固定宽度（设计规范 §5.4）。
+# 96px 足够容纳最长数值（如 CIE Lab 的 -128.0）且不会裁切文字。
+SPIN_WIDTH = 96
+# 参数名标签只给最小宽度，绝不定死宽度，窄窗口时才不会被裁切。
+LABEL_MIN_WIDTH = 24
+
+
+# =============================================================================
 # PreviewStrip
 # =============================================================================
 class PreviewStrip(QWidget):
+    """一维渐变色条 + 当前位置标记（点击/拖拽发出归一化位置）。"""
+
     posChanged = Signal(float)
 
     def __init__(self, parent=None):
@@ -269,7 +294,21 @@ class PreviewStrip(QWidget):
         self._current_pos = 0.0
         self._cache = None
         self._cache_width = -1
+        self._cache_height = -1
         self._dragging = False
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setMinimumSize(STRIP_MIN_WIDTH, STRIP_HEIGHT)
+        self.setMaximumHeight(STRIP_HEIGHT)
+
+    def sizeHint(self):
+        return QSize(180, STRIP_HEIGHT)
+
+    def minimumSizeHint(self):
+        return QSize(STRIP_MIN_WIDTH, STRIP_HEIGHT)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update()
 
     def set_batch_builder(self, builder):
         self._batch_builder = builder
@@ -289,12 +328,15 @@ class PreviewStrip(QWidget):
             return
         painter = QPainter(self)
         w, h = self.width(), self.height()
-        if self._cache is None or self._cache_width != w:
+        if (self._cache is None or self._cache_width != w
+                or self._cache_height != h):
             self._cache = self._batch_builder(w, h)
             self._cache_width = w
+            self._cache_height = h
         painter.drawPixmap(0, 0, self._cache)
         if self._current_pos >= 0:
             x = int(self._current_pos * (w - 1))
+            # 位置标记叠在任意渐变之上，黑白双线保证对比度，不跟随主题色。
             painter.setPen(QPen(Qt.white, 2))
             painter.drawLine(x, 0, x, h)
             painter.setPen(QPen(Qt.black, 1))
@@ -334,6 +376,8 @@ class PreviewStrip(QWidget):
 # ColorSlider
 # =============================================================================
 class ColorSlider(QWidget):
+    """参数滑块行：参数名 + 渐变色条 + 数值输入框。"""
+
     valueChanged = Signal(float)
 
     def __init__(self, label, vmin, vmax, default, decimals=3, step=0.001, parent=None):
@@ -345,30 +389,26 @@ class ColorSlider(QWidget):
         self._fixed_idx = 0
         self._block = False
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        self._label = QLabel(label)
-        self._label.setFixedWidth(22)
+        self._label = FieldLabel(str(label))
+        self._label.setMinimumWidth(LABEL_MIN_WIDTH)
         self._label.setAlignment(Qt.AlignCenter)
-        self._label.setStyleSheet("font-weight: bold; font-size: 11px;")
-        layout.addWidget(self._label)
 
         self._preview = PreviewStrip(self)
-        self._preview.setFixedHeight(24)
         self._preview.setCursor(Qt.PointingHandCursor)
         self._preview.posChanged.connect(self._on_preview)
-        layout.addWidget(self._preview, 1)
 
         self._spin = QDoubleSpinBox()
         self._spin.setRange(vmin, vmax)
         self._spin.setDecimals(decimals)
         self._spin.setSingleStep(step)
         self._spin.setValue(default)
-        self._spin.setFixedWidth(80)
+        self._spin.setFixedWidth(SPIN_WIDTH)
+        self._spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self._spin.valueChanged.connect(self._on_spin)
-        layout.addWidget(self._spin)
+
+        layout = hbox(self._label, self._preview, self._spin,
+                      spacing=SPACE.sm, stretch=1)
+        self.setLayout(layout)
 
     def set_batch_builder(self, builder, fixed_idx=0):
         self._batch_builder = builder
@@ -407,52 +447,133 @@ class ColorSlider(QWidget):
 # GraphicalPicker
 # =============================================================================
 class GraphicalPicker(QWidget):
+    """圆环（色相）+ 方块（二维色度）+ 可选侧边条 的图形取色器。
+
+    尺寸交给布局决定：高度由构造参数 *size* 固定（设计规范 §5.1 允许的例外，
+    主窗口约 260、对话框约 220，最小 180），宽度随容器变化。绘制时始终以
+    ``min(宽, 高)`` 计算圆环与方块并居中，因此窗口缩放时不会顶出布局。
+    """
+
     colorChanged = Signal(object)
+
+    MIN_RENDER_HEIGHT = 180
+    # 绘制留白：保证方块边缘的圆点标记不被裁切。
+    RENDER_PADDING = SPACE.sm
+    # 绘制比例与原实现一致：内环 = 0.70 外环，方块边长 = 1.30 倍内环。
+    _RING_INNER_RATIO = 0.70
+    _SQUARE_TO_INNER = 1.30
 
     def __init__(self, model: BaseColorModel, size=240, parent=None):
         super().__init__(parent)
         self._model = model
         self._model.add_listener(self._on_model_changed)
-        self._size = size
-        self._ring_outer_r = size // 2
-        self._ring_inner_r = int(size * 0.35)
-        self._square_size = int(self._ring_inner_r * 1.3)
-        self._square_size = min(self._square_size, size - 20)
-        self._strip_width = 20
-        self._strip_gap = 8
-        self._has_side_strip = (model.strip_index >= 0 and not model.has_hue)
+        self._has_side_strip = model.strip_index >= 0 and not model.has_hue
+        self._preferred_height = max(int(size), self.MIN_RENDER_HEIGHT)
+
+        # 只固定高度，宽度 Expanding（设计规范 §5.1）。
+        self.setFixedHeight(self._preferred_height)
+        self.setMinimumWidth(self.MIN_RENDER_HEIGHT // 2)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        self._metrics_size = QSize(-1, -1)
+        self._active_region = None
         self._cache_ring = None
         self._cache_sq = None
-        self._cache_sq_hue = -999
+        self._cache_sq_hue = -999.0
         self._cache_strip = None
-        self._active_region = None
+        self._strip_qrect = QRectF()
+        self._update_metrics()
         self.setMouseTracking(True)
 
-        if self._has_side_strip:
-            avail = size - self._strip_width - self._strip_gap - 24
-            new_sq = min(avail, size - 20)
-            if new_sq > self._square_size:
-                self._square_size = int(new_sq)
-            self.setFixedSize(self._square_size + self._strip_width + self._strip_gap + 12, size)
-        else:
-            self.setFixedSize(size, size)
+    # -- 尺寸 ------------------------------------------------------------
+    def sizeHint(self):
+        return QSize(self._preferred_height, self._preferred_height)
 
-    def _square_rect(self):
-        w, h = self.width(), self.height()
-        cx, cy = w / 2, h / 2
+    def minimumSizeHint(self):
+        return QSize(self.MIN_RENDER_HEIGHT // 2, self._preferred_height)
+
+    def _update_metrics(self):
+        """按当前控件尺寸重算圆环/方块/色条几何，绘制与命中共用同一份数据。"""
+        w = max(1, self.width())
+        h = max(1, self.height())
+        pad = self.RENDER_PADDING
+        avail_w = max(1.0, w - 2 * pad)
+        avail_h = max(1.0, h - 2 * pad)
+        self._metrics_size = QSize(w, h)
+        self._strip_gap = float(SPACE.sm)
+        self._cx = w / 2.0
+        self._cy = h / 2.0
+        self._ring_outer_r = 0.0
+        self._ring_inner_r = 0.0
+        self._strip_width = 0
+        self._square_size = 16
+        self._strip_qrect = QRectF()
+
         if self._has_side_strip:
-            aw = w - (self._strip_width + self._strip_gap)
-            cx, cy = aw / 2, h / 2
-        hs = self._square_size / 2
-        return cx, cy, cx - hs, cy - hs, cx + hs, cy + hs
+            self._strip_width = max(10, int(min(avail_w, avail_h) * 0.08))
+            avail_for_square = avail_w - self._strip_width - self._strip_gap
+            self._square_size = max(16, int(min(avail_h, avail_for_square)))
+            total_w = self._square_size + self._strip_width + self._strip_gap
+            left = pad + (avail_w - total_w) / 2.0
+            top = pad + (avail_h - self._square_size) / 2.0
+            self._cx = left + self._square_size / 2.0
+            self._cy = top + self._square_size / 2.0
+            self._strip_qrect = QRectF(
+                left + self._square_size + self._strip_gap, top,
+                float(self._strip_width), float(self._square_size))
+            return
+
+        ref = min(avail_w, avail_h)
+        if self._model.has_hue:
+            self._ring_outer_r = ref / 2.0
+            self._ring_inner_r = self._ring_outer_r * self._RING_INNER_RATIO
+            self._square_size = max(
+                16, int(self._ring_inner_r * self._SQUARE_TO_INNER))
+        else:
+            self._square_size = max(16, int(ref * 0.92))
+
+    def _ensure_metrics(self):
+        if self._metrics_size != self.size():
+            self._update_metrics()
+            self._invalidate_caches()
+
+    def _invalidate_caches(self):
+        self._cache_ring = None
+        self._cache_sq = None
+        self._cache_sq_hue = -999.0
+        self._cache_strip = None
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_metrics()
+        self._invalidate_caches()
+        self.update()
+
+    # -- 模型切换 --------------------------------------------------------
+    def set_model(self, model: BaseColorModel):
+        """换模型：摘旧监听 → 重绑 → 重算几何并失效缓存 → 重绘。"""
+        if model is self._model:
+            self._invalidate_caches()
+            self.update()
+            return
+        self._model.remove_listener(self._on_model_changed)
+        self._model = model
+        model.add_listener(self._on_model_changed)
+        self._has_side_strip = model.strip_index >= 0 and not model.has_hue
+        self._update_metrics()
+        self._invalidate_caches()
+        self.update()
+
+    # -- 几何 ------------------------------------------------------------
+    def _square_rect(self):
+        hs = self._square_size / 2.0
+        return (self._cx, self._cy,
+                self._cx - hs, self._cy - hs,
+                self._cx + hs, self._cy + hs)
 
     def _strip_rect(self):
-        w, h = self.width(), self.height()
-        aw = w - (self._strip_width + self._strip_gap)
-        sx = aw + self._strip_gap
-        sy = 4
-        sh = h - 8
-        return sx, sy, self._strip_width, sh
+        rect = self._strip_qrect
+        return rect.x(), rect.y(), rect.width(), rect.height()
 
     def _strip_val_from_pos(self, p, sy, sh):
         rng = self._model.param_ranges
@@ -466,39 +587,47 @@ class GraphicalPicker(QWidget):
         ny = (v - rng[si][0]) / (rng[si][1] - rng[si][0])
         return sy + (1 - ny) * sh
 
+    # -- 绘制 ------------------------------------------------------------
     def paintEvent(self, event):
+        self._ensure_metrics()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
         cx, cy, _, _, _, _ = self._square_rect()
 
         if self._model.has_hue:
-            self._draw_ring(painter, cx, cy)
+            self._draw_ring(painter)
         self._draw_square(painter, cx, cy)
-
-        si = self._model.strip_index
-        if si >= 0:
+        if self._model.strip_index >= 0:
             self._draw_strip(painter)
+        self._draw_markers(painter, cx, cy)
 
-        p = self._model.get_params()
+    def _draw_markers(self, painter, cx, cy):
+        model = self._model
+        p = model.get_params()
 
-        if self._model.has_hue:
-            hi = self._model.hue_index
+        if model.has_hue and self._ring_outer_r > 0:
+            hi = model.hue_index
             angle_rad = np.radians(p[hi] - 90)
             r1, r2 = self._ring_inner_r, self._ring_outer_r
+            # 标记画在任意颜色之上，黑白双线保证对比度，不跟随主题色。
             painter.setPen(QPen(Qt.white, 2))
-            painter.drawLine(QPointF(cx + r1*np.cos(angle_rad), cy + r1*np.sin(angle_rad)),
-                             QPointF(cx + r2*np.cos(angle_rad), cy + r2*np.sin(angle_rad)))
+            painter.drawLine(
+                QPointF(cx + r1 * np.cos(angle_rad), cy + r1 * np.sin(angle_rad)),
+                QPointF(cx + r2 * np.cos(angle_rad), cy + r2 * np.sin(angle_rad)))
             painter.setPen(QPen(Qt.black, 1))
-            painter.drawLine(QPointF(cx + r1*np.cos(angle_rad) + 2, cy + r1*np.sin(angle_rad)+2),
-                             QPointF(cx + r2*np.cos(angle_rad) + 2, cy + r2*np.sin(angle_rad)+2))
+            painter.drawLine(
+                QPointF(cx + r1 * np.cos(angle_rad) + 2,
+                        cy + r1 * np.sin(angle_rad) + 2),
+                QPointF(cx + r2 * np.cos(angle_rad) + 2,
+                        cy + r2 * np.sin(angle_rad) + 2))
 
-        xi, yi = self._model.square_x_index, self._model.square_y_index
+        xi, yi = model.square_x_index, model.square_y_index
         if xi >= 0 and yi >= 0:
-            rng = self._model.param_ranges
+            rng = model.param_ranges
             nx = (p[xi] - rng[xi][0]) / (rng[xi][1] - rng[xi][0])
             ny = 1 - (p[yi] - rng[yi][0]) / (rng[yi][1] - rng[yi][0])
-            hs = self._square_size / 2
+            hs = self._square_size / 2.0
             dx = cx - hs + nx * self._square_size
             dy = cy - hs + ny * self._square_size
             painter.setPen(QPen(Qt.white, 2))
@@ -507,18 +636,15 @@ class GraphicalPicker(QWidget):
             painter.setPen(QPen(Qt.black, 1))
             painter.drawEllipse(QPointF(dx, dy), 7, 7)
 
-        if si >= 0 and self._has_side_strip and self._cache_strip is not None:
+        si = model.strip_index
+        if si >= 0 and self._cache_strip is not None:
             sx, sy, sw, sh = self._strip_rect()
             vy = self._strip_pos_from_val(p[si], sy, sh)
             painter.setPen(QPen(Qt.white, 2))
             painter.drawLine(int(sx), int(vy), int(sx + sw), int(vy))
-            painter.setPen(QPen(Qt.black, 1))
-            painter.drawLine(int(sx), int(vy+1), int(sx + sw), int(vy+1))
-        elif si >= 0 and not self._has_side_strip and self._cache_strip is not None:
-            sx, sy, sw, sh = self._strip_rect()
-            vy = self._strip_pos_from_val(p[si], sy, sh)
-            painter.setPen(QPen(Qt.white, 2))
-            painter.drawLine(int(sx), int(vy), int(sx + sw), int(vy))
+            if self._has_side_strip:
+                painter.setPen(QPen(Qt.black, 1))
+                painter.drawLine(int(sx), int(vy + 1), int(sx + sw), int(vy + 1))
 
     def _build_ring_colors(self, n=180):
         p = self._model.get_params()
@@ -535,30 +661,46 @@ class GraphicalPicker(QWidget):
                 colors.append(QColor(0, 0, 0))
         return colors
 
-    def _draw_ring(self, painter, cx, cy):
+    def _build_ring_pixmap(self):
+        outer = self._ring_outer_r
+        if outer <= 1.0:
+            return
+        size = max(2, int(round(outer * 2.0)))
+        r_out = size / 2.0
+        r_in = self._ring_inner_r * (r_out / outer)
+        pm = QPixmap(size, size)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        center = QPointF(r_out, r_out)
+        grad = QConicalGradient(center, 90)
+        colors = self._build_ring_colors(180)
+        for i, c in enumerate(colors):
+            grad.setColorAt(1.0 - i / len(colors), c)
+        p.setPen(Qt.NoPen)
+        p.setBrush(grad)
+        p.drawPie(QRectF(center.x() - r_out, center.y() - r_out,
+                         r_out * 2.0, r_out * 2.0), 0, 360 * 16)
+        p.setCompositionMode(QPainter.CompositionMode_Clear)
+        p.drawEllipse(center, r_in, r_in)
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        p.setPen(QPen(qcolor("border_strong"), 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(center, r_in, r_in)
+        p.end()
+        self._cache_ring = pm
+
+    def _draw_ring(self, painter):
+        if self._ring_outer_r <= 1.0:
+            return
+        size = max(2, int(round(self._ring_outer_r * 2.0)))
+        if self._cache_ring is None or self._cache_ring.width() != size:
+            self._build_ring_pixmap()
         if self._cache_ring is None:
-            pm = QPixmap(self._size, self._size)
-            pm.fill(Qt.transparent)
-            p = QPainter(pm)
-            grad = QConicalGradient(QPointF(cx, cy), 90)
-            colors = self._build_ring_colors(180)
-            for i, c in enumerate(colors):
-                grad.setColorAt(1.0 - i / len(colors), c)
-            p.setPen(Qt.NoPen)
-            p.setBrush(grad)
-            p.drawPie(QRectF(cx - self._ring_outer_r, cy - self._ring_outer_r,
-                             2*self._ring_outer_r, 2*self._ring_outer_r), 0, 360*16)
-            ir = QRectF(cx - self._ring_inner_r, cy - self._ring_inner_r,
-                         2*self._ring_inner_r, 2*self._ring_inner_r)
-            p.setCompositionMode(QPainter.CompositionMode_Clear)
-            p.drawEllipse(ir)
-            p.setCompositionMode(QPainter.CompositionMode_SourceOver)
-            p.setPen(QPen(QColor(80, 80, 80, 160), 1))
-            p.setBrush(Qt.NoBrush)
-            p.drawEllipse(ir)
-            p.end()
-            self._cache_ring = pm
-        painter.drawPixmap(0, 0, self._cache_ring)
+            return
+        x = int(round(self._cx - self._cache_ring.width() / 2.0))
+        y = int(round(self._cy - self._cache_ring.height() / 2.0))
+        painter.drawPixmap(x, y, self._cache_ring)
 
     def _build_square_image(self):
         sq = self._square_size
@@ -580,17 +722,19 @@ class GraphicalPicker(QWidget):
 
     def _draw_square(self, painter, cx, cy):
         p = self._model.get_params()
-        rebuild = self._cache_sq is None
-        if self._model.has_hue:
+        rebuild = (self._cache_sq is None
+                   or self._cache_sq.width() != self._square_size)
+        if self._model.has_hue and not rebuild:
             hi = self._model.hue_index
-            rebuild = rebuild or abs(self._cache_sq_hue - p[hi]) > 0.5
+            rebuild = abs(self._cache_sq_hue - p[hi]) > 0.5
         if rebuild:
             self._build_square_image()
-        hs = self._square_size / 2
-        painter.drawPixmap(int(cx - hs), int(cy - hs), self._cache_sq)
+        hs = self._square_size / 2.0
+        painter.drawPixmap(int(round(cx - hs)), int(round(cy - hs)), self._cache_sq)
 
     def _build_strip(self):
         sx, sy, sw, sh = self._strip_rect()
+        sw, sh = int(round(sw)), int(round(sh))
         if sw <= 0 or sh <= 0:
             return
         n = sh
@@ -612,13 +756,18 @@ class GraphicalPicker(QWidget):
     def _draw_strip(self, painter):
         if not self._has_side_strip:
             return
-        if self._cache_strip is None:
+        sh = int(round(self._strip_qrect.height()))
+        if self._cache_strip is None or self._cache_strip.height() != sh:
             self._build_strip()
-        sx, sy, sw, sh = self._strip_rect()
-        painter.drawPixmap(int(sx), int(sy), self._cache_strip)
+        if self._cache_strip is None:
+            return
+        sx, sy, _, _ = self._strip_rect()
+        painter.drawPixmap(int(round(sx)), int(round(sy)), self._cache_strip)
 
+    # -- 交互 ------------------------------------------------------------
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            self._ensure_metrics()
             region = self._hit_test(event.position())
             if region is not None:
                 self._active_region = region
@@ -635,10 +784,9 @@ class GraphicalPicker(QWidget):
             self.releaseMouse()
 
     def _hit_test(self, pos):
-        if self._model.has_hue:
-            cx, cy, _, _, _, _ = self._square_rect()
-            dx, dy = pos.x() - cx, pos.y() - cy
-            dist = np.sqrt(dx*dx + dy*dy)
+        if self._model.has_hue and self._ring_outer_r > 0:
+            dx, dy = pos.x() - self._cx, pos.y() - self._cy
+            dist = np.hypot(dx, dy)
             if self._ring_inner_r <= dist <= self._ring_outer_r:
                 return 'ring'
         si = self._model.strip_index
@@ -658,8 +806,7 @@ class GraphicalPicker(QWidget):
         rng = self._model.param_ranges
 
         if region == 'ring':
-            cx, cy, _, _, _, _ = self._square_rect()
-            dx, dy = pos.x() - cx, pos.y() - cy
+            dx, dy = pos.x() - self._cx, pos.y() - self._cy
             angle = np.degrees(np.arctan2(dy, dx)) + 90
             new_h = angle % 360
             p[self._model.hue_index] = new_h
@@ -697,9 +844,7 @@ class GraphicalPicker(QWidget):
     def _on_model_changed(self, model, source):
         if source is self:
             return
-        self._cache_ring = None
-        self._cache_sq = None
-        self._cache_strip = None
+        self._invalidate_caches()
         self.update()
 
 
@@ -707,8 +852,14 @@ class GraphicalPicker(QWidget):
 # ColorInfoPanel
 # =============================================================================
 class ColorInfoPanel(QWidget):
+    """颜色信息面板：色块预览、色域状态、RGB/HEX 数值与两个操作按钮。"""
+
     pickStart = Signal()
     constrainRequested = Signal()
+
+    COPY_TEXT = "复制 HEX"
+    COPIED_TEXT = "已复制"
+    COPY_FEEDBACK_MS = 1200
 
     def __init__(self, model: BaseColorModel, parent=None):
         super().__init__(parent)
@@ -718,87 +869,65 @@ class ColorInfoPanel(QWidget):
         self._sync_display()
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout = vbox(spacing=SPACE.sm)
+        self.setLayout(layout)
 
-        self._preview = QFrame()
-        self._preview.setFixedHeight(50)
-        self._preview.setFrameShape(QFrame.StyledPanel)
-        layout.addWidget(self._preview)
+        self._swatch = ColorSwatch(self._model.to_qcolor())
+        layout.addWidget(self._swatch)
 
-        gamut_layout = QHBoxLayout()
-        self._gamut_label = QLabel("sRGB 色域内")
-        self._gamut_label.setAlignment(Qt.AlignCenter)
-        gamut_layout.addWidget(self._gamut_label, 1)
-
-        self._constrain_btn = QPushButton("约束至 sRGB")
-        self._constrain_btn.setStyleSheet("""
-            QPushButton { padding: 2px 10px; font-size: 10px;
-                background-color: #EF5350; color: white;
-                border: none; border-radius: 3px; }
-            QPushButton:hover { background-color: #D32F2F; }
-            QPushButton:pressed { background-color: #B71C1C; }
-        """)
-        self._constrain_btn.setCursor(Qt.PointingHandCursor)
+        self._gamut_label = StatusLabel("", State.SUCCESS)
+        self._gamut_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        # 状态文字很短：显式使用 Preferred 宽策略，避免在窄面板里被压成 0 宽。
+        self._gamut_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self._constrain_btn = SecondaryButton(
+            "约束至 sRGB", tooltip="映射回 sRGB 色域")
         self._constrain_btn.clicked.connect(self.constrainRequested.emit)
         self._constrain_btn.setVisible(False)
-        gamut_layout.addWidget(self._constrain_btn)
-        layout.addLayout(gamut_layout)
+        layout.addLayout(hbox(self._gamut_label, self._constrain_btn, None,
+                              spacing=SPACE.sm))
 
-        self._rgb_label = QLabel("")
-        self._rgb_label.setAlignment(Qt.AlignCenter)
-        self._rgb_label.setStyleSheet("color: #888; font-size: 10px;")
-        layout.addWidget(self._rgb_label)
+        self._rgb_label = ValueLabel("")
+        self._hex_label = MonoLabel("")
+        values_row = hbox(self._rgb_label, self._hex_label, spacing=SPACE.md)
+        # 两段数值并排一行，居中显示，省出对话框高度。
+        layout.addLayout(hbox(None, values_row, None))
 
-        self._hex_label = QLabel("")
-        self._hex_label.setAlignment(Qt.AlignCenter)
-        self._hex_label.setStyleSheet("color: #555; font-size: 11px; font-family: Consolas, monospace;")
-        layout.addWidget(self._hex_label)
-
-        hl = QHBoxLayout()
-        hl.addStretch()
-        btn_pick = QPushButton("🎯 屏幕取色")
-        btn_pick.setStyleSheet("""
-            QPushButton { padding: 6px 16px; font-size: 12px;
-                background-color: #5C6BC0; color: white;
-                border: none; border-radius: 4px; }
-            QPushButton:hover { background-color: #3F51B5; }
-            QPushButton:pressed { background-color: #303F9F; }
-        """)
-        btn_pick.setCursor(Qt.PointingHandCursor)
-        btn_pick.clicked.connect(self.pickStart.emit)
-        hl.addWidget(btn_pick)
-
-        self._copy_btn = QPushButton("📋 复制 HEX")
-        self._copy_btn.setStyleSheet("""
-            QPushButton { padding: 6px 16px; font-size: 12px;
-                background-color: #5C6BC0; color: white;
-                border: none; border-radius: 4px; }
-            QPushButton:hover { background-color: #00897B; }
-            QPushButton:pressed { background-color: #00695C; }
-        """)
-        self._copy_btn.setCursor(Qt.PointingHandCursor)
+        self._pick_btn = PrimaryButton("屏幕取色", tooltip="在屏幕上取色")
+        self._pick_btn.clicked.connect(self.pickStart.emit)
+        self._copy_btn = SecondaryButton(self.COPY_TEXT, tooltip="复制十六进制值")
         self._copy_btn.clicked.connect(self._copy_hex)
-        hl.addWidget(self._copy_btn)
-        hl.addStretch()
-        layout.addLayout(hl)
+        # 按钮放在换行布局里：窄窗口下自动折到第二行，不会挤爆面板。
+        layout.addLayout(flow(self._pick_btn, self._copy_btn, spacing=SPACE.sm))
 
+        self._copy_timer = QTimer(self)
+        self._copy_timer.setSingleShot(True)
+        self._copy_timer.setInterval(self.COPY_FEEDBACK_MS)
+        self._copy_timer.timeout.connect(self._restore_copy_text)
+
+        # 面板被放进更高的容器时内容保持顶部对齐，不被均匀拉开。
+        layout.addStretch(1)
+
+    # -- 模型绑定 --------------------------------------------------------
+    def set_model(self, model: BaseColorModel):
+        """换模型：摘掉旧监听、重绑新模型并刷新显示。"""
+        if model is self._model:
+            self.refresh()
+            return
+        self._model.remove_listener(self._on_model_changed)
+        self._model = model
+        model.add_listener(self._on_model_changed)
+        self.refresh()
+
+    # -- 显示 ------------------------------------------------------------
     def _sync_display(self):
-        self._copy_btn.setText("📋 复制 HEX")
-        qc = self._model.to_qcolor()
-        gamut = self._model.is_in_gamut()
-        self._preview.setStyleSheet(
-            f"background-color: {qc.name()}; border: 2px solid; border-radius: 4px;"
-        )
-        if gamut:
-            self._gamut_label.setText("✓ sRGB 色域内")
-            self._gamut_label.setStyleSheet("color: #4CAF50; font-size: 11px; margin: 2px 0px 2px 0px;")
-            self._constrain_btn.setVisible(False)
+        self._swatch.set_color(self._model.to_qcolor())
+        in_gamut = self._model.is_in_gamut()
+        if in_gamut:
+            self._gamut_label.set_message("sRGB 色域内", State.SUCCESS)
         else:
-            self._gamut_label.setText("✗ 超出 sRGB 色域")
-            self._gamut_label.setStyleSheet("color: #f44336; font-size: 11px; margin: 2px 0px 2px 0px;")
-            self._constrain_btn.setVisible(True)
+            self._gamut_label.set_message("超出 sRGB 色域", State.DANGER)
+        self._constrain_btn.setVisible(not in_gamut)
+
         r, g, b = self._model.to_srgb_tuple()
         ri = round(r * 255)
         gi = round(g * 255)
@@ -807,13 +936,12 @@ class ColorInfoPanel(QWidget):
         self._hex_label.setText(f"#{ri:02X}{gi:02X}{bi:02X}")
 
     def _copy_hex(self):
-        r, g, b = self._model.to_srgb_tuple()
-        ri = round(r * 255)
-        gi = round(g * 255)
-        bi = round(b * 255)
-        hex_str = f"#{ri:02X}{gi:02X}{bi:02X}"
-        QApplication.clipboard().setText(hex_str)
-        self._copy_btn.setText("✅ 已复制")
+        QApplication.clipboard().setText(self._hex_label.text())
+        self._copy_btn.setText(self.COPIED_TEXT)
+        self._copy_timer.start()
+
+    def _restore_copy_text(self):
+        self._copy_btn.setText(self.COPY_TEXT)
 
     def _on_model_changed(self, model, source):
         self._sync_display()
@@ -826,6 +954,8 @@ class ColorInfoPanel(QWidget):
 # DynamicSlidersWidget
 # =============================================================================
 class DynamicSlidersWidget(QWidget):
+    """按模型参数动态生成滑块行；切模型时原地重建行而不重建整个控件。"""
+
     colorChanged = Signal(object)
 
     def __init__(self, model: BaseColorModel, parent=None):
@@ -834,26 +964,42 @@ class DynamicSlidersWidget(QWidget):
         self._model.add_listener(self._on_model_changed)
         self._updating = False
         self._sliders = []
-        self._init_ui()
+        self._layout = vbox(spacing=SPACE.sm)
+        self.setLayout(self._layout)
+        self._rebuild_sliders()
 
-    def _init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
-
+    # -- 构建 / 重建 -----------------------------------------------------
+    def _rebuild_sliders(self):
+        for slider in self._sliders:
+            self._layout.removeWidget(slider)
+            slider.setParent(None)
+            slider.deleteLater()
         self._sliders = []
+
+        params = self._model.get_params()
         for i, name in enumerate(self._model.param_names):
             vmin, vmax = self._model.param_ranges[i]
-            default = self._model.get_params()[i]
             dec = self._model.param_decimals[i]
             step = self._model.param_steps[i]
-            sl = ColorSlider(name, vmin, vmax, default, dec, step)
-            sl.valueChanged.connect(lambda v, idx=i: self._on_slider_changed(idx, v))
-            layout.addWidget(sl)
-            self._sliders.append(sl)
+            slider = ColorSlider(name, vmin, vmax, params[i], dec, step)
+            slider.valueChanged.connect(
+                lambda v, idx=i: self._on_slider_changed(idx, v))
+            self._layout.addWidget(slider)
+            self._sliders.append(slider)
 
         self._update_gradients()
 
+    def set_model(self, model: BaseColorModel):
+        """换模型：摘旧监听 → 重绑 → 按新参数重建滑块行并刷新渐变。"""
+        if model is self._model:
+            self._sync_from_model()
+            return
+        self._model.remove_listener(self._on_model_changed)
+        self._model = model
+        model.add_listener(self._on_model_changed)
+        self._rebuild_sliders()
+
+    # -- 交互 ------------------------------------------------------------
     def _on_slider_changed(self, idx, value):
         if self._updating:
             return
@@ -865,7 +1011,7 @@ class DynamicSlidersWidget(QWidget):
 
     def _update_gradients(self):
         rng = self._model.param_ranges
-        for i, sl in enumerate(self._sliders):
+        for i, slider in enumerate(self._sliders):
             def builder(w, h, idx=i, self_ref=self):
                 p_base = self_ref._model.get_params()
                 ps = np.tile(p_base, (w, 1))
@@ -880,14 +1026,14 @@ class DynamicSlidersWidget(QWidget):
                     make_argb_image(w, h, r, g, b, m)
                 )
                 return px
-            sl.set_batch_builder(builder, fixed_idx=i)
-            sl.refresh_gradient()
+            slider.set_batch_builder(builder, fixed_idx=i)
+            slider.refresh_gradient()
 
     def _sync_from_model(self):
         p = self._model.get_params()
         self._updating = True
-        for i, sl in enumerate(self._sliders):
-            sl.set_value(p[i], block=True)
+        for i, slider in enumerate(self._sliders):
+            slider.set_value(p[i], block=True)
         self._updating = False
         self._update_gradients()
 

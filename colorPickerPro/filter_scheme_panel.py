@@ -6,23 +6,31 @@
 - FilterSchemePanel  ：滤镜方案管理面板（添加 / 删除 / 复制 / 选择 / 排序滤镜，
                        编辑被选滤镜的参数，保存 / 加载方案）
 
-方案管理面板把滤镜当作图层来操作：图层列表在左侧（可拖动排序、勾选启用），
+方案管理面板把滤镜当作图层来操作：图层列表在左右分栏的左侧（可拖动排序、勾选启用），
 被选图层的参数编辑区在右侧（复用原先已实现的参数编辑控件）。
 删除“方案”的功能不在这里，而在选择列表（filter_scheme_selector.py）中。
+
+面板使用 ``colorPickerPro.ui`` 设计系统：``ThemedDialog`` 外壳（无边框 + 自绘标题栏）、
+工具栏用 ``FlowLayout`` 自动换行，主体用 ``QSplitter`` 分栏，所以窗口变窄时不会出界或重叠。
 """
 
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QListWidget, QListWidgetItem, QScrollArea, QMenu, QInputDialog,
-    QMessageBox, QAbstractItemView, QFileDialog,
+    QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QSplitter,
+    QMenu, QAbstractItemView,
 )
 
 from .filter_lib import ImageFilter
 from .filter_scheme import FilterScheme, get_scheme_store
 from .list_selection_dialog import ListSelectionDialog
+from .ui.components import (
+    CaptionLabel, FlowLayout, HintLabel, IconButton,
+    ScrollArea, SectionTitle, ThemedDialog,
+    alert, confirm, get_save_file_name, prompt_text,
+)
+from .ui.tokens import SPACE
 
 
 # ============================================================
@@ -43,35 +51,21 @@ class FilterParamsWidget(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(SPACE.md)
 
         if title:
-            title_lbl = QLabel(title)
-            title_lbl.setObjectName("paramTitle")
-            layout.addWidget(title_lbl)
+            layout.addWidget(SectionTitle(title))
 
         self._rows = QWidget(self)
         self._rows_layout = QVBoxLayout(self._rows)
         self._rows_layout.setContentsMargins(0, 0, 0, 0)
-        self._rows_layout.setSpacing(6)
+        self._rows_layout.setSpacing(SPACE.md)
         layout.addWidget(self._rows)
 
-        self._empty_lbl = QLabel("该滤镜没有可调参数")
-        self._empty_lbl.setStyleSheet("color: #888; font-size: 12px;")
+        self._empty_lbl = HintLabel("该滤镜没有可调参数")
         layout.addWidget(self._empty_lbl)
 
         layout.addStretch()
-
-        self.setStyleSheet("""
-            QLabel#paramTitle { font-weight: bold; font-size: 13px; color: #ddd; }
-            QLabel#paramName { color: #bbb; font-size: 12px; }
-            QDoubleSpinBox { background: #3a3a3a; color: white; border: 1px solid #555;
-                             border-radius: 3px; padding: 2px 4px; font-size: 11px; }
-            QSlider::groove:horizontal { height: 4px; background: #555; border-radius: 2px; }
-            QSlider::handle:horizontal { background: #999; width: 14px; margin: -5px 0;
-                                         border-radius: 7px; }
-            QSlider::handle:horizontal:hover { background: #bbb; }
-        """)
 
         if params:
             self.set_params(params)
@@ -87,20 +81,27 @@ class FilterParamsWidget(QWidget):
         self._params = []
 
     def set_params(self, params: Optional[list]):
-        self.detach_params()
-        for w in self._param_widgets:
-            self._rows_layout.removeWidget(w)
-            w.setParent(None)
-            w.deleteLater()
-        self._param_widgets = []
+        # 参数区整体换页：关闭重绘，避免控件销毁/重建时中间态被画出来
+        # （表现为参数区或面板闪一下）。
+        self.setUpdatesEnabled(False)
+        try:
+            self.detach_params()
+            for w in self._param_widgets:
+                self._rows_layout.removeWidget(w)
+                w.setParent(None)
+                w.deleteLater()
+            self._param_widgets = []
 
-        self._params = list(params or [])
-        for p in self._params:
-            w = p.create_widget(self._emit_changed)
-            self._rows_layout.addWidget(w)
-            self._param_widgets.append(w)
+            self._params = list(params or [])
+            for p in self._params:
+                w = p.create_widget(self._emit_changed)
+                self._rows_layout.addWidget(w)
+                self._param_widgets.append(w)
 
-        self._empty_lbl.setVisible(not self._params)
+            self._empty_lbl.setVisible(not self._params)
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
     def _emit_changed(self):
         self.paramsChanged.emit()
@@ -109,37 +110,11 @@ class FilterParamsWidget(QWidget):
 
 
 # ============================================================
-# 面板标题栏（无边框窗口拖动）
-# ============================================================
-
-class _DragBar(QWidget):
-    def __init__(self, target: QWidget, parent=None):
-        super().__init__(parent)
-        self._target = target
-        self._drag_offset = None
-
-    def mousePressEvent(self, e):
-        if e.button() == Qt.LeftButton:
-            self._drag_offset = (e.globalPosition().toPoint()
-                                 - self._target.frameGeometry().topLeft())
-            e.accept()
-
-    def mouseMoveEvent(self, e):
-        if self._drag_offset is not None and (e.buttons() & Qt.LeftButton):
-            self._target.move(e.globalPosition().toPoint() - self._drag_offset)
-            e.accept()
-
-    def mouseReleaseEvent(self, e):
-        self._drag_offset = None
-        e.accept()
-
-
-# ============================================================
 # 滤镜方案管理面板
 # ============================================================
 
-class FilterSchemePanel(QDialog):
-    """滤镜方案管理面板。
+class FilterSchemePanel(ThemedDialog):
+    """滤镜方案管理面板（无边框工具窗口）。
 
     图层化地管理一个滤镜方案：
     - 添加滤镜、删除滤镜、复制滤镜
@@ -157,18 +132,25 @@ class FilterSchemePanel(QDialog):
     schemesChanged = Signal()         # 已保存的方案列表变化（保存成功时）
 
     def __init__(self, scheme: Optional[FilterScheme] = None, store=None, parent=None):
-        super().__init__(parent)
+        super().__init__("滤镜方案", "", parent)
+        # 无边框工具窗口：标题栏 / 关闭按钮 / 尺寸手柄都由 FramelessWindowMixin
+        # 提供，这里只需保留 Tool 语义（跟随父窗口、不占任务栏）。
+        self.setWindowFlag(Qt.Tool, True)
+        self.setModal(False)
+
         self._store = store if store is not None else get_scheme_store()
         self._scheme = scheme if isinstance(scheme, FilterScheme) else FilterScheme()
         self._suspend = False
+        self._param_layer = None
         # 最近一次保存/加载时的内容签名：与当前内容不同即视为“有未保存修改”
         self._saved_state = self._scheme.state_signature()
 
-        self.setWindowTitle("滤镜方案")
-        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint)
-        self.setModal(False)
+        # 动态方案名显示在标题栏下方的副标题里（带 * 表示有未保存修改）。
+        # 兼容旧属性名（测试/宿主会读它），但写入统一走 set_subtitle()。
+        self._name_lbl = self.subtitle_label
+
         self.setMinimumSize(560, 360)
-        self.resize(640, 420)
+        self.resize(640, 440)
 
         self._build_ui()
         self._reload_layers()
@@ -176,142 +158,80 @@ class FilterSchemePanel(QDialog):
     # ---------- 界面 ----------
 
     def _build_ui(self):
-        self.setStyleSheet("""
-            FilterSchemePanel { background-color: #242424; border: 1px solid #555; }
-            QLabel#schemeTitle { font-weight: bold; font-size: 13px; color: #ddd;
-                                 background: transparent; }
-            QLabel#listCaption { color: #999; font-size: 11px; }
-            QListWidget { background: #2a2a2a; color: #ddd; border: 1px solid #444;
-                          border-radius: 3px; font-size: 12px; }
-            QListWidget::item { padding: 4px 6px; }
-            QListWidget::item:selected { background: #5C6BC0; color: white; }
-            QScrollArea { border: none; background: transparent; }
-        """)
+        # 工具栏：图层操作 + 文件操作。窗口变窄时 FlowLayout 自动换行，不会顶出窗口
+        toolbar = QWidget(self)
+        flow = FlowLayout(toolbar, margin=0,
+                          h_spacing=SPACE.xs, v_spacing=SPACE.xs)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(8, 6, 8, 8)
-        root.setSpacing(6)
-
-        # 标题栏
-        bar = _DragBar(self, self)
-        bar.setFixedHeight(28)
-        bar_lay = QHBoxLayout(bar)
-        bar_lay.setContentsMargins(4, 0, 0, 0)
-        bar_lay.setSpacing(6)
-
-        icon = QLabel("🧩")
-        icon.setStyleSheet("background: transparent;")
-        bar_lay.addWidget(icon)
-
-        self._title_lbl = QLabel("滤镜方案")
-        self._title_lbl.setObjectName("schemeTitle")
-        bar_lay.addWidget(self._title_lbl)
-
-        self._name_lbl = QLabel("")
-        self._name_lbl.setStyleSheet("color: #8bc34a; font-size: 12px; background: transparent;")
-        bar_lay.addWidget(self._name_lbl)
-        bar_lay.addStretch()
-
-        btn_close = QPushButton("✕")
-        btn_close.setFixedSize(24, 24)
-        btn_close.setStyleSheet("""
-            QPushButton { background-color: #E53935; color: white; border: none;
-                          border-radius: 3px; font-size: 12px; }
-            QPushButton:hover { background-color: #C62828; }
-        """)
-        btn_close.setCursor(Qt.PointingHandCursor)
-        btn_close.clicked.connect(self.close)
-        bar_lay.addWidget(btn_close)
-        root.addWidget(bar)
-
-        # 工具栏
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(4)
-
-        self._btn_add = QPushButton("＋ 添加滤镜")
-        self._btn_add.setStyleSheet(self._btn_style("#26A69A"))
-        self._btn_add.setCursor(Qt.PointingHandCursor)
+        self._btn_add = IconButton("add", tooltip="添加滤镜")
         self._btn_add.setMenu(self._make_add_menu())
-        toolbar.addWidget(self._btn_add)
+        flow.addWidget(self._btn_add)
 
-        self._btn_copy = QPushButton("⧉ 复制图层")
-        self._btn_copy.setStyleSheet(self._btn_style("#5C6BC0"))
-        self._btn_copy.setCursor(Qt.PointingHandCursor)
+        self._btn_copy = IconButton("copy", tooltip="复制图层")
         self._btn_copy.clicked.connect(self._on_duplicate)
-        toolbar.addWidget(self._btn_copy)
+        flow.addWidget(self._btn_copy)
 
-        self._btn_del = QPushButton("✕ 删除图层")
-        self._btn_del.setStyleSheet(self._btn_style("#E53935"))
-        self._btn_del.setCursor(Qt.PointingHandCursor)
+        self._btn_del = IconButton("trash", tooltip="删除图层", danger=True)
         self._btn_del.clicked.connect(self._on_remove)
-        toolbar.addWidget(self._btn_del)
+        flow.addWidget(self._btn_del)
 
-        self._btn_up = QPushButton("▲ 上移")
-        self._btn_up.setStyleSheet(self._btn_style("#455A64"))
-        self._btn_up.setCursor(Qt.PointingHandCursor)
+        self._btn_up = IconButton("chevron-up", tooltip="上移一层")
         self._btn_up.clicked.connect(lambda: self._on_move(-1))
-        toolbar.addWidget(self._btn_up)
+        flow.addWidget(self._btn_up)
 
-        self._btn_down = QPushButton("▼ 下移")
-        self._btn_down.setStyleSheet(self._btn_style("#455A64"))
-        self._btn_down.setCursor(Qt.PointingHandCursor)
+        self._btn_down = IconButton("chevron-down", tooltip="下移一层")
         self._btn_down.clicked.connect(lambda: self._on_move(1))
-        toolbar.addWidget(self._btn_down)
+        flow.addWidget(self._btn_down)
 
-        toolbar.addStretch()
-
-        self._btn_save = QPushButton("💾 保存方案")
-        self._btn_save.setStyleSheet(self._btn_style("#FF8F00"))
-        self._btn_save.setCursor(Qt.PointingHandCursor)
-        self._btn_save.setToolTip(f"保存到：{self._store.path}")
+        self._btn_save = IconButton("save", tooltip="保存方案")
         self._btn_save.clicked.connect(self._on_save)
-        toolbar.addWidget(self._btn_save)
+        flow.addWidget(self._btn_save)
 
-        self._btn_load = QPushButton("📂 加载方案")
-        self._btn_load.setStyleSheet(self._btn_style("#00897B"))
-        self._btn_load.setCursor(Qt.PointingHandCursor)
+        self._btn_load = IconButton("open", tooltip="加载方案")
         self._btn_load.clicked.connect(self._on_load)
-        toolbar.addWidget(self._btn_load)
+        flow.addWidget(self._btn_load)
 
-        root.addLayout(toolbar)
+        self.add_body(toolbar)
 
-        # 主体：左图层列表 / 右参数
-        body = QHBoxLayout()
-        body.setSpacing(8)
+        # 主体：左图层列表 / 右参数（可拖动分栏，各自有最小宽度）
+        splitter = QSplitter(Qt.Horizontal, self)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(SPACE.sm)
 
-        left = QVBoxLayout()
-        left.setSpacing(4)
-        cap_l = QLabel("滤镜图层（从上到下依次处理，可拖动排序）")
-        cap_l.setObjectName("listCaption")
-        left.addWidget(cap_l)
-
-        self._layer_list = QListWidget()
+        left_host = QWidget(splitter)
+        cap_l = CaptionLabel("滤镜图层", word_wrap=True)
+        self._layer_list = QListWidget(left_host)
+        self._layer_list.setToolTip("从上到下依次处理，可拖动调整顺序")
+        self._layer_list.setMinimumWidth(180)
         self._layer_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self._layer_list.setDragDropMode(QAbstractItemView.InternalMove)
         self._layer_list.setDefaultDropAction(Qt.MoveAction)
         self._layer_list.currentRowChanged.connect(self._on_current_changed)
         self._layer_list.itemChanged.connect(self._on_item_changed)
         self._layer_list.model().rowsMoved.connect(self._on_rows_moved)
-        left.addWidget(self._layer_list, 1)
-        body.addLayout(left, 1)
+        left_layout = QVBoxLayout(left_host)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(SPACE.xs)
+        left_layout.addWidget(cap_l)
+        left_layout.addWidget(self._layer_list, 1)
 
-        right = QVBoxLayout()
-        right.setSpacing(4)
-        self._param_caption = QLabel("参数")
-        self._param_caption.setObjectName("listCaption")
-        right.addWidget(self._param_caption)
-
+        right_host = QWidget(splitter)
+        self._param_caption = CaptionLabel("参数", word_wrap=True)
         self._params_widget = FilterParamsWidget(None, None, "")
         self._params_widget.paramsChanged.connect(self._on_params_changed)
+        param_scroll = ScrollArea(self._params_widget, right_host)
+        param_scroll.setMinimumWidth(240)
+        right_layout = QVBoxLayout(right_host)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(SPACE.xs)
+        right_layout.addWidget(self._param_caption)
+        right_layout.addWidget(param_scroll, 1)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        scroll.setWidget(self._params_widget)
-        right.addWidget(scroll, 1)
-        body.addLayout(right, 2)
-
-        root.addLayout(body, 1)
+        splitter.addWidget(left_host)
+        splitter.addWidget(right_host)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        self.add_body(splitter, 1)
 
         self._update_title()
 
@@ -321,12 +241,6 @@ class FilterSchemePanel(QDialog):
             act = menu.addAction(cls.name())
             act.triggered.connect(lambda checked=False, c=cls: self._add_filter(c))
         return menu
-
-    @staticmethod
-    def _btn_style(color: str) -> str:
-        return (f"QPushButton {{ padding: 4px 10px; font-size: 11px; background-color: {color};"
-                " color: white; border: none; border-radius: 3px; }"
-                "QPushButton:hover { background-color: #3a3a3a; }")
 
     # ---------- 方案存取 ----------
 
@@ -365,37 +279,44 @@ class FilterSchemePanel(QDialog):
         self._update_title()
 
     def _update_title(self):
-        self._title_lbl.setText("滤镜方案")
         name = self._scheme.display_name()
         if name and self.is_dirty():
             name = f"{name}*"   # 有未保存修改
-        text = f"[{name}]" if name else ""
-        if text != self._name_lbl.text():
-            self._name_lbl.setText(text)
+        # 标题栏只放固定标题，方案名放在副标题：写入统一走 ThemedDialog 接口
+        self.set_title("滤镜方案")
+        self.set_subtitle(f"[{name}]" if name else "")
 
     # ---------- 图层列表 ----------
 
     def _reload_layers(self, select: Optional[int] = None):
+        # 列表与参数区一起重建：冻结重绘并只在最后重建一次参数区，
+        # 避免 clear()/setCurrentRow() 触发的中间帧造成闪屏。
+        self.setUpdatesEnabled(False)
         self._suspend = True
-        self._layer_list.clear()
-        for layer in self._scheme.layers:
-            item = QListWidgetItem(layer.name)
-            item.setData(Qt.UserRole, layer)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable
-                          | Qt.ItemIsDragEnabled | Qt.ItemIsEnabled)
-            item.setCheckState(Qt.Checked if layer.enabled else Qt.Unchecked)
-            self._layer_list.addItem(item)
-        self._suspend = False
+        try:
+            self._layer_list.clear()
+            for layer in self._scheme.layers:
+                item = QListWidgetItem(layer.name)
+                item.setData(Qt.UserRole, layer)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable
+                              | Qt.ItemIsDragEnabled | Qt.ItemIsEnabled)
+                item.setCheckState(Qt.Checked if layer.enabled else Qt.Unchecked)
+                self._layer_list.addItem(item)
 
-        count = self._layer_list.count()
+            count = self._layer_list.count()
+            if count > 0:
+                row = self._layer_list.currentRow() if select is None else select
+                if row is None or row < 0 or row >= count:
+                    row = 0
+                # 仍处于 _suspend 状态，setCurrentRow 不会触发参数区重建。
+                self._layer_list.setCurrentRow(row)
+        finally:
+            self._suspend = False
+            self.setUpdatesEnabled(True)
+
         if count == 0:
             self._rebuild_params()
             return
-
-        row = self._layer_list.currentRow() if select is None else select
-        if row is None or row < 0 or row >= count:
-            row = 0
-        self._layer_list.setCurrentRow(row)
         self._rebuild_params()
 
     def current_layer(self):
@@ -475,13 +396,17 @@ class FilterSchemePanel(QDialog):
 
     # ---------- 参数 ----------
 
-    def _rebuild_params(self):
+    def _rebuild_params(self, force: bool = False):
         layer = self.current_layer()
+        if not force and layer is self._param_layer:
+            # 上移/下移只是换顺序，选中图层对象没变，参数区无需重建。
+            return
+        self._param_layer = layer
         if layer is None:
-            self._param_caption.setText("参数（未选择滤镜）")
+            self._param_caption.setText("参数")
             self._params_widget.set_params([])
             return
-        self._param_caption.setText(f"参数 - {layer.name}")
+        self._param_caption.setText(f"参数 · {layer.name}")
         self._params_widget.set_params(layer.filter.exposed_parameters())
 
     def _on_params_changed(self):
@@ -495,21 +420,19 @@ class FilterSchemePanel(QDialog):
 
     def _on_save(self):
         default_name = self._scheme.name or ""
-        name, ok = QInputDialog.getText(self, "保存滤镜方案", "方案名称：",
-                                        text=default_name)
+        # 无边框文本输入对话框（ui.components.prompt_text），返回 (text, ok)
+        name, ok = prompt_text(self, "保存滤镜方案", "方案名称", default_name)
         if not ok:
             return
         name = (name or "").strip()
         if not name:
-            QMessageBox.warning(self, "保存滤镜方案", "方案名称不能为空")
+            alert(self, "保存滤镜方案", "方案名称不能为空")
             return
         if self._store.has(name):
-            ret = QMessageBox.question(self, "保存滤镜方案",
-                                       f"方案「{name}」已存在，是否覆盖？")
-            if ret != QMessageBox.Yes:
+            if not confirm(self, "保存滤镜方案", f"方案「{name}」已存在，是否覆盖？"):
                 return
         if not self._store.add(self._scheme.clone(name=name), overwrite=True):
-            QMessageBox.warning(self, "保存滤镜方案", "保存失败")
+            alert(self, "保存滤镜方案", "保存失败")
             return
         if not self._save_store():
             return
@@ -521,28 +444,27 @@ class FilterSchemePanel(QDialog):
     def _save_store(self) -> bool:
         """写入方案文件；失败时说明原因并允许另选保存位置。"""
         if self._store.save():
-            self._btn_save.setToolTip(f"保存到：{self._store.path}")
             return True
         detail = self._store.last_error or "未知错误"
-        QMessageBox.warning(self, "保存滤镜方案",
-                            f"写入方案文件失败：\n{self._store.path}\n\n原因：{detail}")
-        ret = QMessageBox.question(self, "保存滤镜方案", "是否另选一个保存位置？")
-        if ret != QMessageBox.Yes:
+        alert(self, "保存滤镜方案",
+              f"写入方案文件失败：\n{self._store.path}\n\n原因：{detail}")
+        if not confirm(self, "保存滤镜方案", "是否另选一个保存位置？"):
             return False
-        path, _ = QFileDialog.getSaveFileName(
+        # 无边框文件选择对话框（ui.components.get_save_file_name）
+        path, _ = get_save_file_name(
             self, "选择滤镜方案文件", self._store.path, "方案文件 (*.json)")
         if not path:
             return False
         if self._store.save_as(path):
             return True
-        QMessageBox.warning(self, "保存滤镜方案",
-                            f"仍然写入失败：\n{path}\n\n原因：{self._store.last_error}")
+        alert(self, "保存滤镜方案",
+              f"仍然写入失败：\n{path}\n\n原因：{self._store.last_error}")
         return False
 
     def _on_load(self):
         names = self._store.names()
         if not names:
-            QMessageBox.information(self, "加载滤镜方案", "还没有已保存的方案")
+            alert(self, "加载滤镜方案", "还没有已保存的方案")
             return
         current = self._scheme.name
         index = names.index(current) if current in names else 0
@@ -561,3 +483,6 @@ class FilterSchemePanel(QDialog):
     def closeEvent(self, event):
         self._params_widget.detach_params()
         super().closeEvent(event)
+
+
+__all__ = ["FilterParamsWidget", "FilterSchemePanel"]

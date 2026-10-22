@@ -1,6 +1,14 @@
+"""图像滤镜对比窗口：把原图与多个滤镜方案放在同一个列表查看器里对比。
+
+窗口使用统一的自绘标题栏；内容区只有一行简短提示和 ListViewer。
+同步逻辑保持原样：重叠模式各视图独立记忆变换；横向模式实时同步平移、缩放、
+旋转。窗口缩放时由画布自己保持场景中心，避免同步把「缩放漂移」广播给所有视图。
+"""
+
 import sys
 from functools import partial
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QDialog
+
+from PySide6.QtWidgets import QDialog, QVBoxLayout, QWidget
 from PySide6.QtGui import QPixmap
 
 if __name__ == "__main__" and (__package__ is None or __package__ == ''):
@@ -12,6 +20,10 @@ if __name__ == "__main__" and (__package__ is None or __package__ == ''):
     from colorPickerPro.filter_scheme import FilterScheme, filter_class_by_name
     from colorPickerPro.filter_scheme_selector import FilterSchemeSelectorDialog
     from colorPickerPro.image_viewer import ViewTransform
+    from colorPickerPro.ui.components import (
+        FramelessWindowMixin, vbox,
+    )
+    from colorPickerPro.ui.tokens import SPACE
 else:
     from .list_viewer import ListViewer
     from .filter_image_viewer import FilterImageViewer
@@ -19,6 +31,8 @@ else:
     from .filter_scheme import FilterScheme, filter_class_by_name
     from .filter_scheme_selector import FilterSchemeSelectorDialog
     from .image_viewer import ViewTransform
+    from .ui.components import FramelessWindowMixin, vbox
+    from .ui.tokens import SPACE
 
 
 def to_scheme_item(item):
@@ -35,7 +49,7 @@ def to_scheme_item(item):
     return None
 
 
-class ImageFilterCompareWindow(QWidget):
+class ImageFilterCompareWindow(FramelessWindowMixin, QWidget):
     def __init__(self, pixmap: QPixmap, schemes: list = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("图像滤镜对比")
@@ -49,12 +63,23 @@ class ImageFilterCompareWindow(QWidget):
         self._overlap_transform: ViewTransform = None
         self._horizontal_transform: ViewTransform = None
 
-        self.__syncing = True 
+        self.__syncing = True
         '当实时同步开启时为True'
-        
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(1, 1, 1, 1)
+        outer.setSpacing(0)
+        self.init_frameless(
+            "图像滤镜对比", layout=outer, show_minimize=True,
+            show_maximize=True, show_close=True, resizable=True,
+            double_click="maximize", raise_on_show=True)
+
+        body = QWidget()
+        body.setObjectName("FramelessBody")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(SPACE.md, SPACE.sm, SPACE.md, SPACE.sm)
+        layout.setSpacing(SPACE.xs)
+        outer.addWidget(body, 1)
 
         items = []
 
@@ -83,7 +108,7 @@ class ImageFilterCompareWindow(QWidget):
         self._list_viewer._btn_add.clicked.disconnect()
         self._list_viewer._btn_add.clicked.connect(self._on_add_item)
 
-        self._close_event=False
+        self._close_event = False
         self._list_viewer.closed.connect(self._close)
 
         layout.addWidget(self._list_viewer, 1)
@@ -97,23 +122,27 @@ class ImageFilterCompareWindow(QWidget):
         self._init_mode_transform()
 
     def _close(self):
-        self._close_event=True
+        self._close_event = True
         self.close()
 
     def closeEvent(self, event):
         if not self._close_event:
             self._list_viewer.closed.emit()
+        # 让 FramelessWindowMixin 收尾（摘掉全局事件过滤器并调用基类实现）。
+        super().closeEvent(event)
 
     def _begin_sync(self):
         if self.__syncing:
             raise RuntimeError('已开始同步？')
         self.__syncing = True
         print('开始同步')
+
     def _end_sync(self):
         if not self.__syncing:
             raise RuntimeError('已停止同步？')
         self.__syncing = False
         print('停止同步')
+
     def _is_syncing(self):
         return self.__syncing
 
@@ -133,13 +162,12 @@ class ImageFilterCompareWindow(QWidget):
                     first_vt = viewer.image_viewer.export_view_transform()
                 else:
                     viewer.image_viewer.import_view_transform(first_vt)
-        print('<-设置初始变换',mode)
+        print('<-设置初始变换', mode)
         if mode == ListViewer.ViewMode.OVERLAP:
             self._overlap_transform = first_vt
         else:
             self._horizontal_transform = first_vt
         self._begin_sync()
-        
 
     def _hook_item(self, liw):
         viewer = liw.content_widget
@@ -147,8 +175,9 @@ class ImageFilterCompareWindow(QWidget):
             slot = partial(self._on_transform_changed, viewer)
             viewer._transform_slot = slot
             viewer.transformChanged.connect(slot)
+
     def _unhook_item(self, liw):
-        print('脱钩',liw)
+        print('脱钩', liw)
         viewer = liw.content_widget
         if isinstance(viewer, FilterImageViewer):
             slot = getattr(viewer, '_transform_slot', None)
@@ -162,42 +191,46 @@ class ImageFilterCompareWindow(QWidget):
         if content_h < 50:
             content_h = 50
         return int(content_h * self._aspect_ratio) + 8
-    
+
     def _on_rebuilding(self):
         print("正在重建GUI，停止同步")
         self._end_sync()
+
     def _on_rebuilded(self):
         print("重建GUI完成，恢复同步")
         self._begin_sync()
 
-    def _on_item_changing(self,liw):
+    def _on_item_changing(self, liw):
         print('<-切换项开始，保存ViewMode.OVERLAP')
         self._overlap_transform = liw.content_widget.image_viewer.export_view_transform()
-        pass
 
-    def _on_item_changed(self,liw):
+    def _on_item_changed(self, liw):
         print('->切换项完成，读取ViewMode.OVERLAP')
         if liw is not None:
             liw.content_widget.image_viewer.import_view_transform(self._overlap_transform)
-        pass
 
     def _on_view_mode_changing(self, mode):
-        print('模式切换开始',mode)
+        print('模式切换开始', mode)
         if mode == ListViewer.ViewMode.OVERLAP:
             print('<-保存ViewMode.HORIZONTAL')
-            self._horizontal_transform=self._list_viewer.current_item.content_widget.image_viewer.export_view_transform()
+            self._horizontal_transform = (
+                self._list_viewer.current_item.content_widget.image_viewer
+                .export_view_transform())
         else:
             print('<-保存ViewMode.OVERLAP')
-            self._overlap_transform =self._list_viewer.current_item.content_widget.image_viewer.export_view_transform()
+            self._overlap_transform = (
+                self._list_viewer.current_item.content_widget.image_viewer
+                .export_view_transform())
 
     def _on_view_mode_changed(self, mode):
-        print('模式切换完成',mode)
+        print('模式切换完成', mode)
         self._restore_mode_transform()
 
     def _restore_mode_transform(self):
         mode = self._list_viewer.view_mode
-        print('->读取变换',mode)
-        vt = self._overlap_transform if mode == ListViewer.ViewMode.OVERLAP else self._horizontal_transform
+        print('->读取变换', mode)
+        vt = (self._overlap_transform if mode == ListViewer.ViewMode.OVERLAP
+              else self._horizontal_transform)
         if vt is None:
             self._init_mode_transform()
             return
@@ -207,31 +240,29 @@ class ImageFilterCompareWindow(QWidget):
         viewer = cur.content_widget
         if not isinstance(viewer, FilterImageViewer):
             return
-        
-        
+
         self._sync_all_to(vt)
-        
+
     def _on_transform_changed(self, viewer):
         if not self._is_syncing():
             return
         if self._list_viewer.view_mode == ListViewer.ViewMode.OVERLAP:
-            #实时同步仅在横向模式启用
+            # 实时同步仅在横向模式启用
             return
         vt = viewer.image_viewer.export_view_transform()
-        print('<-保存变换',self._list_viewer.view_mode,viewer)
+        print('<-保存变换', self._list_viewer.view_mode, viewer)
         self._horizontal_transform = vt
 
         self._sync_all_to(vt, exclude=viewer)
 
     def _sync_all_to(self, vt: ViewTransform, exclude=None):
         self._end_sync()
-        print('->同步变换到其他控件',self._list_viewer.view_mode)
+        print('->同步变换到其他控件', self._list_viewer.view_mode)
         for liw in self._list_viewer._item_widgets:
             v = liw.content_widget
             if isinstance(v, FilterImageViewer) and v is not exclude:
                 v.image_viewer.import_view_transform(vt)
         self._begin_sync()
-
 
     def _on_add_item(self):
         print('开始添加元素')
@@ -254,8 +285,8 @@ class ImageFilterCompareWindow(QWidget):
             viewer.image_viewer.import_view_transform(self._horizontal_transform)
         self._begin_sync()
 
+
 def run_demo():
-    import sys
     import os
     from pathlib import Path
 
@@ -264,10 +295,10 @@ def run_demo():
 
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QPixmap
-    from colorPickerPro.filter_lib import ImageFilter
+    from colorPickerPro.ui.theme import ensure_theme
 
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setStyle("Fusion")
+    ensure_theme(app)
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     paths = [
@@ -294,4 +325,3 @@ def run_demo():
 
 if __name__ == "__main__":
     run_demo()
-

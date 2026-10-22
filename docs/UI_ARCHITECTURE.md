@@ -1,0 +1,157 @@
+# pixnex UI 架构与改造规范
+
+本文档是 GUI 开发的唯一约定。所有窗口、对话框、控件的写法必须与本文一致。
+
+## 1. 目标
+
+1. **统一外观**：所有顶层窗口都是自绘无边框窗口（自绘标题栏、1px 方角边框），不使用系统标题栏；一套设计令牌 + 一份全局 QSS。主窗口不提供最大化，改为「置顶」按钮。
+2. **图标资产化**：所有图标使用 SVG 资产，禁止字符图标/emoji。
+3. **布局自适应**：只用 Qt 布局管理器；窗口缩放、DPI 缩放时不越界/重叠/裁切；间距保持紧凑（页边距 8、卡片间距 6）。
+4. **单一职责 + 组合复用**：基础控件在 `colorPickerPro/ui/components/`，业务窗口只做组合。
+5. **文案简洁**：界面文字短、正式，不使用口语化长句；不显示色彩模型说明。
+
+## 2. 目录与分层
+
+```
+colorPickerPro/ui/
+    tokens.py         设计令牌：Palette / SPACE / RADIUS / SIZE / TYPE / Role / State / Variant
+    stylesheet.py     由令牌生成全局 QSS（唯一允许写选择器的地方）
+    theme.py          apply_theme(app)：Fusion + 调色板 + 字体 + 中文翻译 + 全局 QSS
+    icons.py          SVG 图标查找（icon/icon_names/icon_pixmap）
+    assets/icons/*.svg 全部界面图标（由 tools/gen_ui_assets.py 生成）
+    components/      可复用控件
+```
+
+依赖单向：`ui` 不 import 业务模块；业务模块可以 import `ui`。
+
+启动方式（`main.py::main()` 或任何 `run_demo()`）：
+
+```python
+from colorPickerPro.ui import configure_application, apply_theme
+
+configure_application()          # 必须在 QApplication 创建前
+app = QApplication(sys.argv)
+apply_theme(app)                 # 必须在任何窗口创建前
+```
+
+## 3. 铁律
+
+1. 禁止业务代码 `setStyleSheet`；样式只存在于 `ui/stylesheet.py`。数据颜色用 `ColorSwatch` / 自绘控件。
+2. 禁止硬编码颜色/字号；使用 `tokens.qcolor(...)` 或组件。
+3. 禁止字符图标：`✕ ─ ▶ ⏸ ⚙ ↔ ↕ ↻ ＋` 等一律改用 `IconButton("svg名")` / `set_icon("svg名")`；
+   新增图标先加 SVG 到 `assets/icons/` 并在 `tools/gen_ui_assets.py` 登记。
+4. 普通内容控件禁止 `setFixedSize/Width/Height`。允许的例外：图标按钮（28×28）、分隔线、标题栏高度、图形取色器高度。
+5. 长文本必须可换行或省略（`SubtitleLabel(word_wrap=True)` / `ElidedLabel`）。
+6. 内容超出高度用 `ScrollArea`，横向工具栏用 `FlowLayout` 自动换行，分栏用 `QSplitter`。
+7. 所有顶层窗口必须 frameless：`FramelessWindowMixin` + `TitleBar`（见 §5），不得回到系统标题栏。
+8. 标准文件选择必须用 `ui.components.get_open_file_name/get_save_file_name`；标准消息/输入框必须用
+   `ui.components.confirm/alert/prompt_text`（都是自绘无框窗口）。
+9. 文案保持简短、正式；一个说明不超过一行，tooltip 尽量 ≤ 14 个汉字；不要展示色彩模型说明。
+10. 注释与 UI 文案使用中文；不保留行为之外的 emoji 或装饰字符。
+11. 逻辑/信号/数据流保持原样：只改表现层与布局。
+12. 每个改动文件必须可导入，并能用 `tools/render_widget.py` 多尺寸渲染无异常。
+
+## 4. 组件速查
+
+导入：`from colorPickerPro.ui.components import ...`
+
+| 组件 | 用途 |
+|---|---|
+| `TitleLabel` / `DisplayLabel` | 页面内标题（窗口标题在 TitleBar 里） |
+| `SubtitleLabel` / `CaptionLabel` / `HintLabel` | 说明文字（可换行） |
+| `SectionTitle` / `FieldLabel` / `ValueLabel` / `MonoLabel` | 小节标题 / 表单标签 / 数值 / 等宽数值 |
+| `StatusLabel` | 状态文字：`set_message(text, State.SUCCESS)` |
+| `ElidedLabel` | 单行、自动省略号 |
+| `PrimaryButton` / `SecondaryButton` | 主操作 / 次要操作 |
+| `DangerButton` / `GhostButton` | 危险操作 / 轻量操作 |
+| `IconButton("close")` | 28×28 SVG 图标按钮（close/minimize/maximize/restore/play/pause/settings/add/refresh/flip-h/flip-v） |
+| `MenuButton` / `BaseButton.set_icon(name)` | 带菜单的按钮 / 文本按钮加图标 |
+| `Card(title)` | 圆角面板：`add` / `add_layout` / `add_header_widget` |
+| `Divider` / `ColorSwatch` / `Badge` | 分隔线 / 颜色块 / 胶囊标签 |
+| `hbox` / `vbox` / `flow` | 布局构造器（`None` 表示 stretch） |
+| `ScrollArea` / `FlowLayout` | 滚动区 / 自动换行布局 |
+| `ThemedDialog` | 无边框对话框外壳（标题栏 / body / footer / 可滚动 body） |
+| `MessageDialog` / `TextInputDialog` / `confirm` / `alert` / `prompt_text` | 自绘消息框与输入框 |
+| `FileDialog` / `get_open_file_name` / `get_save_file_name` | 自绘无边框文件选择（内嵌 QFileDialog） |
+| `FramelessWindowMixin` / `TitleBar` | 任意顶层窗口的自绘标题栏、缩放、拖动、窗口按钮 |
+
+示例：
+
+```python
+class MyDialog(ThemedDialog):
+    def __init__(self, parent=None):
+        super().__init__("标题", "说明", parent)
+        self.make_body_scrollable()
+        self.add_content(some_widget)
+        self.add_reject_button()
+        self.add_accept_button()
+        self.resize(520, 420)
+```
+
+## 5. 自定义窗口（必读）
+
+所有顶层窗口由 `FramelessWindowMixin` 提供：
+- 自绘 `TitleBar`（拖动、双击最大化/折叠、最小化/最大化/关闭按钮，图标来自 SVG）；
+- 1px 方角边框（不做圆角）；
+- 四边/四角缩放：应用级事件过滤器统一处理按下/移动/释放，缩放期间 grabMouse，任意子控件上都可拖动；光标自动切换；
+- 最大化窗口拖动：先 `showNormal()` 还原，再按光标在标题栏中的相对位置摆放窗口，避免还原后与光标错位；
+- 置顶：Windows 下用原生 `SetWindowPos(HWND_TOPMOST)`，不使用会重建窗口的 `setWindowFlag`，避免闪烁；
+- 右下角 `QSizeGrip`；
+- 弹窗显示时前置（`raise + activate`）；父窗口置顶时弹窗自动继承置顶；
+- 关闭时移除全局事件过滤器。
+
+主窗口额外约定：标题栏只有「置顶（图钉）/最小化/关闭」，没有最大化；图钉切换
+`WindowStaysOnTopHint`。对话框标题栏只有关闭按钮。
+
+用法：
+
+```python
+class MyWindow(FramelessWindowMixin, QMainWindow):   # 或 QDialog / QWidget
+    def __init__(self):
+        super().__init__()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(1, 1, 1, 1)   # 给边框留 1px
+        outer.setSpacing(0)
+        self.init_frameless(
+            "窗口标题", layout=outer, subtitle="可选副标题",
+            show_minimize=True, show_maximize=True, show_close=True,
+            resizable=True, double_click="maximize")   # 或 "collapse" / None
+        # 内容放入一个 objectName="FramelessBody" 的容器，再套正常 margins=16 的布局
+```
+
+- `ThemedDialog` 已经内置上述外壳，业务对话框直接继承即可，不要设置窗口 flags（会覆盖 frameless，除非显式 `| Qt.FramelessWindowHint`）。
+- 屏幕滤镜窗口（`CustomFramelessWindow`）额外有折叠和 `content_rect_global()`。
+- `TitleBar` 也可以通过 `window.title_bar` 访问（`set_title/set_subtitle/set_maximized`）。
+
+### 5.1 布局与尺寸
+
+- 主窗口/对话框 body 使用 `margins=8`，卡片间距 6（`SPACE` 令牌：xs=2/sm=4/md=6/lg=8/xl=12）；
+- 卡片内边距 8；控件高度约 26-28；标题栏 30；
+- 图形取色器：`Expanding/Fixed`，高度固定（主窗口 220 / 对话框 180），按 `min(宽,高)` 居中绘制；
+- 主窗口内容放进 `ScrollArea`；对话框长内容用 `make_body_scrollable()`；
+- 左右分栏用 `QSplitter`（禁用折叠、设置最小宽度）；
+- 最小尺寸必须 ≥ `minimumSizeHint()`，不要设置 `setMaximumSize`。
+
+## 6. 跨文件 API
+
+| 提供方 | API | 使用方 |
+|---|---|---|
+| `FramelessWindowMixin` | `init_frameless(...)`、`title_bar`、`set_window_title/subtitle`、`set_border_color`、`toggle_maximize` | 全部顶层窗口 |
+| `ThemedDialog` | `set_title/set_subtitle`、`add_content`、`make_body_scrollable`、footer 按钮 | 全部业务对话框 |
+| `IconButton` | `IconButton("svg名")`、`set_icon("svg名")` | 所有图标按钮 |
+| `customFrame.CustomFramelessWindow` | `content_rect_global()`、`add_title_bar_button()`、`toggle_collapse()`、`is_collapsed()` | `screenFilter` |
+| `color_picker_widgets` | `set_model()` / `remove_listener()` | `main.py` / 取色对话框 |
+
+## 7. 自带验证
+
+```powershell
+.venv\Scripts\python.exe tools\gen_ui_assets.py          # 重新生成 SVG 图标
+.venv\Scripts\python.exe tools\ui_gallery.py             # 组件库预览（自绘窗口）
+.venv\Scripts\python.exe tools\render_widget.py          # 任意窗口多尺寸截图
+.venv\Scripts\python.exe tests\ui_layout_check.py --dpi-pass 1.5
+.venv\Scripts\python.exe tests\test_sync_udm_regression.py
+```
+
+巡检断言：窗口均 frameless 且有 TitleBar、边框可见、边缘拖动缩放正确、
+无字符图标、SVG 引用存在、无越界/裁切、静态无 `setStyleSheet`；截图在 `build/ui-shots/`。
+颜色同步回归测试保证 UDM 后端保持延迟导入/懒加载（提前 import psutil 会让 UDM 拒绝内存访问）。

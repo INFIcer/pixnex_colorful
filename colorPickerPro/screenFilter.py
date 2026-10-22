@@ -9,21 +9,26 @@
 滤镜库定义见 filter_lib.py；滤镜方案（滤镜的图层化堆叠）定义见 filter_scheme.py。
 屏幕滤镜窗口承载的是一个「滤镜方案」而不是单个滤镜：创建滤镜即创建一个只含
 该滤镜的方案，后续可以在方案管理面板里继续叠加、删除、排序滤镜。
+
+界面部分全部由 ``colorPickerPro.ui`` 设计系统组合：标题栏按钮是 ``IconButton``，
+边框颜色取自设计令牌（捕获中=强调色，暂停=弱化色），演示窗口用卡片 / 标题 /
+状态标签拼装。捕获区域由 ``CustomFramelessWindow.content_rect_global()`` 得出，
+不再手算标题栏与边框的偏移。
 """
 
 import sys
 import time
 import ctypes
 import hashlib
-import numpy as np
-import mss
 from typing import List
 
-from PySide6.QtGui import QColor, QAction, QClipboard
+import numpy as np
+import mss
+
+from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QMainWindow, QLabel, QPushButton,
-    QVBoxLayout, QGroupBox, QMessageBox, QDialog, QMenu, QFileDialog,
+    QApplication, QWidget, QMainWindow, QVBoxLayout, QMenu,
 )
 if __name__ == "__main__" and (__package__ is None or __package__ == ''):
     from pathlib import Path
@@ -33,19 +38,34 @@ if __name__ == "__main__" and (__package__ is None or __package__ == ''):
     from colorPickerPro.filter_scheme import FilterScheme, to_scheme
     from colorPickerPro.filter_scheme_panel import FilterParamsWidget, FilterSchemePanel
     from colorPickerPro.filter_scheme_selector import FilterSchemeSelectorWidget
+    from colorPickerPro.ui import apply_theme, configure_application
+    from colorPickerPro.ui.components import (
+        Card, DangerButton, FlowLayout, FramelessWindowMixin, IconButton,
+        PrimaryButton, SecondaryButton, StatusLabel, SubtitleLabel,
+        ThemedDialog, TitleLabel, alert, get_save_file_name, vbox,
+    )
+    from colorPickerPro.ui.tokens import SPACE, State, qcolor
 else:
     from .filter_lib import ImageFilter, ImageConvert
     from .customFrame import CustomFramelessWindow, PixmapWidget
     from .filter_scheme import FilterScheme, to_scheme
     from .filter_scheme_panel import FilterParamsWidget, FilterSchemePanel
     from .filter_scheme_selector import FilterSchemeSelectorWidget
+    from .ui import apply_theme, configure_application
+    from .ui.components import (
+        Card, DangerButton, FlowLayout, FramelessWindowMixin, IconButton,
+        PrimaryButton, SecondaryButton, StatusLabel, SubtitleLabel,
+        ThemedDialog, TitleLabel, alert, get_save_file_name, vbox,
+    )
+    from .ui.tokens import SPACE, State, qcolor
 
 
 # ============================================================
 # 第一部分：屏幕滤镜窗口（核心）
 # ============================================================
 
-class _FilterParamsPanel(QDialog):
+
+class _FilterParamsPanel(ThemedDialog):
     """滤镜参数调节面板（弹出式，保留给单个滤镜参数使用）。
 
     参数控件本身由 FilterParamsWidget 提供，这里只负责弹窗外壳；
@@ -53,32 +73,23 @@ class _FilterParamsPanel(QDialog):
     """
 
     def __init__(self, params, on_changed, parent=None):
-        super().__init__(parent)
+        super().__init__("参数调节", "", parent)
+        # 保留原先“点窗口外自动关闭”的弹出行为；窗口外壳仍是自绘样式
+        self.setWindowFlag(Qt.Popup, True)
         self._on_changed = on_changed
 
-        self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground, False)
-        self.setStyleSheet("""
-            _FilterParamsPanel { background-color: #2a2a2a; border: 1px solid #555; }
-            QLabel#paramTitle { font-weight: bold; font-size: 13px; color: #ddd; }
-            QLabel#paramName { color: #bbb; font-size: 12px; }
-            QDoubleSpinBox { background: #3a3a3a; color: white; border: 1px solid #555;
-                             border-radius: 3px; padding: 2px 4px; font-size: 11px; }
-            QSlider::groove:horizontal { height: 4px; background: #555; border-radius: 2px; }
-            QSlider::handle:horizontal { background: #999; width: 14px; margin: -5px 0;
-                                         border-radius: 7px; }
-            QSlider::handle:horizontal:hover { background: #bbb; }
-        """)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(6)
-
         self._params_widget = FilterParamsWidget(params, on_changed,
-                                                 title="参数调节", parent=self)
-        layout.addWidget(self._params_widget)
+                                                 title="", parent=self)
+        # 参数多时放进滚动 body：弹窗高度不会长到超出屏幕
+        content = self.make_body_scrollable()
+        content.addWidget(self._params_widget)
 
-        self.setFixedWidth(360)
+        # 宽度按内容决定（有上下限），不再写死 360
+        self.setMinimumWidth(260)
+        self.setMaximumWidth(560)
+        hint = self._params_widget.sizeHint()
+        self.resize(min(560, max(300, hint.width() + 2 * SPACE.lg)),
+                    min(560, max(240, hint.height() + 120)))
 
     def closeEvent(self, event):
         # 解绑参数与控件，避免控件销毁后参数仍持有失效引用
@@ -92,10 +103,10 @@ class ScreenFilterWindow(CustomFramelessWindow):
 
     特性：
     - 无边框置顶，始终显示滤镜方案处理后的画面
-    - 标题栏拖动，边缘/角缩放
+    - 标题栏拖动，边缘/角缩放（交给窗口系统处理）
     - 暂停/继续捕获按钮（暂停时画面冻结，禁止缩放）
-    - 可见的 2px 蓝色边框
-    - 「⚙」打开滤镜方案管理面板（图层化增删/排序滤镜并编辑参数）
+    - 可见的边框：捕获中为强调色，暂停时变暗
+    - 设置按钮打开滤镜方案管理面板（图层化增删/排序滤镜并编辑参数）
     """
 
     WDA_EXCLUDEFROMCAPTURE = 0x00000011
@@ -106,8 +117,9 @@ class ScreenFilterWindow(CustomFramelessWindow):
         super().__init__(scheme.display_name())
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
         self._capturing = True
-        self._border_color_active = self._border_color
-        self._border_color_paused = QColor(0, 60, 120)
+        # 边框颜色取自设计令牌：捕获中=强调色，暂停=弱化色
+        self._border_color_active = qcolor("accent")
+        self._border_color_paused = qcolor("text_faint")
         self._scheme = scheme
         self._sct = mss.mss()
         self._scheme_panel = None
@@ -137,35 +149,27 @@ class ScreenFilterWindow(CustomFramelessWindow):
             pass
 
     def _build_filter_ui(self):
-        self._btn_pause = QPushButton("\u23f8")
-        self._btn_pause.setFixedSize(self.BTN_SIZE, self.BTN_SIZE)
-        self._btn_pause.setStyleSheet(self._btn_style("#555"))
-        self._btn_pause.setToolTip("暂停捕获")
-        self.add_title_bar_button(self._btn_pause)
+        self._btn_pause = IconButton("pause", tooltip="暂停捕获")
         self._btn_pause.clicked.connect(self._toggle_capture)
+        self.add_title_bar_button(self._btn_pause)
 
-        self._btn_params = QPushButton("\u2699")
-        self._btn_params.setFixedSize(self.BTN_SIZE, self.BTN_SIZE)
-        self._btn_params.setStyleSheet(self._btn_style("#555"))
-        self._btn_params.setToolTip("滤镜方案（图层管理 / 参数）")
-        self.add_title_bar_button(self._btn_params)
+        self._btn_params = IconButton("settings", tooltip="滤镜方案")
         self._btn_params.clicked.connect(self._toggle_scheme_panel)
+        self.add_title_bar_button(self._btn_params)
 
         self.set_content_widget(PixmapWidget())
 
     def _toggle_capture(self):
         self._capturing = not self._capturing
         if self._capturing:
-            self._btn_pause.setText("\u23f8")
+            self._btn_pause.set_icon("pause")
             self._btn_pause.setToolTip("暂停捕获")
             self._timer.start()
             self._frozen_raw = None
             self._raw_hash = None
-            self._resize_active = False
-            self._resize_edge = 0
             self.set_border_color(self._border_color_active)
         else:
-            self._btn_pause.setText("\u25b6")
+            self._btn_pause.set_icon("play")
             self._btn_pause.setToolTip("继续捕获")
             self._timer.stop()
             self._tick()
@@ -188,6 +192,7 @@ class ScreenFilterWindow(CustomFramelessWindow):
         self._scheme_panel.move(btn_pos)
         self._scheme_panel.show()
         self._scheme_panel.raise_()
+        self._scheme_panel.activateWindow()
 
     def _on_scheme_replaced(self, scheme):
         """面板换掉了方案对象（加载方案），窗口必须改用新对象渲染。"""
@@ -247,28 +252,44 @@ class ScreenFilterWindow(CustomFramelessWindow):
         except Exception as ex:
             print(f"[ScreenFilter] {ex}")
 
+    def _capture_region(self):
+        """内容区在屏幕上的像素区域（已裁剪到所在屏幕内）。
+
+        返回 (left, top, width, height)，都相对于 mss 的虚拟桌面；
+        内容区完全在屏幕外时返回 None。
+        """
+        content = self.content_rect_global()
+        screen = QApplication.screenAt(content.center())
+        if screen is None:
+            return None
+        sg = screen.geometry()
+        visible = content.intersected(sg)
+        if visible.isEmpty():
+            return None
+        screens = QApplication.screens()
+        index = screens.index(screen)
+        monitors = self._sct.monitors
+        monitor = monitors[index + 1] if index + 1 < len(monitors) else monitors[0]
+        dpr = screen.devicePixelRatio()
+        return (
+            monitor["left"] + int((visible.x() - sg.x()) * dpr),
+            monitor["top"] + int((visible.y() - sg.y()) * dpr),
+            max(1, int(visible.width() * dpr)),
+            max(1, int(visible.height() * dpr)),
+        )
+
     def _tick(self):
         if not self.isVisible() or self._collapsed:
             return
 
         if self._capturing:
             try:
-                geo = self.geometry()
-                screen = QApplication.screenAt(geo.center())
-                if not screen:
+                region = self._capture_region()
+                if region is None:
                     return
-                sg = screen.geometry()
-                dpr = screen.devicePixelRatio()
-                screens = QApplication.screens()
-                idx = screens.index(screen)
-                mon = self._sct.monitors[idx + 1]
-                cx = int((geo.x() - sg.x() + 4) * dpr)
-                cy = int((geo.y() - sg.y() + 36) * dpr)
-                cw = max(1, int((geo.width() - 8) * dpr))
-                ch = max(1, int((geo.height() - 40) * dpr))
+                left, top, width, height = region
                 sct_img = self._sct.grab({
-                    "left": mon["left"] + cx, "top": mon["top"] + cy,
-                    "width": cw, "height": ch,
+                    "left": left, "top": top, "width": width, "height": height,
                 })
                 raw = np.array(sct_img, dtype=np.uint8)
                 frozen_raw = raw[:, :, :3].copy()
@@ -328,7 +349,8 @@ class ScreenFilterWindow(CustomFramelessWindow):
         pm = self._content.pixmap()
         if pm is None or pm.isNull():
             return
-        path, _ = QFileDialog.getSaveFileName(
+        # 无边框文件选择对话框（与主界面同款自绘外壳）
+        path, _ = get_save_file_name(
             self, "保存图像", "",
             "PNG 图像 (*.png);;JPEG 图像 (*.jpg *.jpeg);;BMP 图像 (*.bmp)"
         )
@@ -353,8 +375,8 @@ class ScreenFilterWindow(CustomFramelessWindow):
 # 第二部分：演示 GUI
 # ============================================================
 
-class ScreenFilterDemo(QMainWindow):
-    """屏幕滤镜演示程序"""
+class ScreenFilterDemo(FramelessWindowMixin, QMainWindow):
+    """屏幕滤镜演示程序（无边框 + 自绘标题栏）。"""
 
     def __init__(self):
         super().__init__()
@@ -363,67 +385,64 @@ class ScreenFilterDemo(QMainWindow):
         self._build_ui()
 
     def _build_ui(self):
-        self.setWindowTitle("屏幕滤镜演示")
         self.setMinimumSize(420, 520)
-        self.resize(420, 560)
+        self.resize(440, 620)
 
-        c = QWidget()
-        self.setCentralWidget(c)
-        lo = QVBoxLayout(c)
-        lo.setSpacing(12)
+        central = QWidget()
+        central.setObjectName("AppRoot")
+        self.setCentralWidget(central)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(1, 1, 1, 1)
+        outer.setSpacing(0)
+        self.init_frameless("屏幕滤镜演示", layout=outer,
+                            show_minimize=True, show_maximize=True,
+                            show_close=True, resizable=True,
+                            double_click="maximize")
+        self.setWindowTitle("屏幕滤镜演示")
 
-        t = QLabel("\U0001f5bc 屏幕滤镜系统")
-        t.setAlignment(Qt.AlignCenter)
-        t.setStyleSheet("font-size:20px;font-weight:bold;padding:12px 0 4px 0;")
-        lo.addWidget(t)
+        body = QWidget()
+        body.setObjectName("FramelessBody")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(SPACE.md, SPACE.md, SPACE.md, SPACE.md)
+        layout.setSpacing(SPACE.md)
+        outer.addWidget(body, 1)
 
-        d = QLabel("选择滤镜或已保存方案 \u2192 点击「创建屏幕滤镜」生成置顶滤镜窗口")
-        d.setAlignment(Qt.AlignCenter)
-        d.setStyleSheet("color:#888;font-size:12px;padding-bottom:8px;")
-        d.setWordWrap(True)
-        lo.addWidget(d)
+        # 标题 + 说明
+        layout.addLayout(vbox(
+            TitleLabel("屏幕滤镜"),
+            SubtitleLabel("选择滤镜或方案，创建置顶窗口"),
+            spacing=SPACE.xxs))
 
-        g = QGroupBox("滤镜库 / 已保存方案")
-        g.setStyleSheet("QGroupBox{font-weight:bold;font-size:13px;}")
-        gl = QVBoxLayout(g)
-
-        self._selector = FilterSchemeSelectorWidget()
+        # 滤镜库 / 已保存方案
+        selector_card = Card("滤镜库 / 已保存方案", padding=SPACE.sm)
+        self._selector = FilterSchemeSelectorWidget(parent=selector_card)
         self._selector.schemesChanged.connect(self._on_schemes_changed)
-        gl.addWidget(self._selector)
-        lo.addWidget(g, 1)
+        selector_card.add(self._selector, 1)
+        layout.addWidget(selector_card, 1)
 
-        b = QPushButton("✨ 创建屏幕滤镜")
-        b.clicked.connect(self._on_create)
-        b.setStyleSheet("QPushButton{background:#4CAF50;color:white;padding:10px;"
-                        "font-size:15px;border:none;border-radius:6px;font-weight:bold;}"
-                        "QPushButton:hover{background:#43A047;}"
-                        "QPushButton:pressed{background:#388E3C;}")
-        lo.addWidget(b)
+        # 操作区：窗口变窄时自动换行
+        actions = QWidget(central)
+        flow = FlowLayout(actions, margin=0,
+                          h_spacing=SPACE.sm, v_spacing=SPACE.sm)
+        self._btn_create = PrimaryButton("创建屏幕滤镜", tooltip="以当前选择创建窗口")
+        self._btn_create.clicked.connect(self._on_create)
+        flow.addWidget(self._btn_create)
 
-        b2 = QPushButton("\U0001f5d1 关闭所有")
-        b2.clicked.connect(self._on_close_all)
-        b2.setStyleSheet("QPushButton{background:#E53935;color:white;padding:8px;"
-                         "font-size:13px;border:none;border-radius:6px;}"
-                         "QPushButton:hover{background:#D32F2F;}"
-                         "QPushButton:pressed{background:#C62828;}")
-        lo.addWidget(b2)
+        self._btn_manage = SecondaryButton("方案管理", tooltip="编辑并保存方案")
+        self._btn_manage.clicked.connect(self._on_manage_scheme)
+        flow.addWidget(self._btn_manage)
 
-        b3 = QPushButton("\U0001f9e9 方案管理（新建 / 编辑 / 保存方案）")
-        b3.clicked.connect(self._on_manage_scheme)
-        b3.setStyleSheet("QPushButton{background:#5C6BC0;color:white;padding:8px;"
-                         "font-size:13px;border:none;border-radius:6px;}"
-                         "QPushButton:hover{background:#3F51B5;}"
-                         "QPushButton:pressed{background:#303F9F;}")
-        lo.addWidget(b3)
+        self._btn_close_all = DangerButton("关闭所有", tooltip="关闭全部滤镜窗口")
+        self._btn_close_all.clicked.connect(self._on_close_all)
+        flow.addWidget(self._btn_close_all)
+        layout.addWidget(actions)
 
-        self._status = QLabel("就绪")
-        self._status.setAlignment(Qt.AlignCenter)
-        self._status.setStyleSheet("color:#999;font-size:12px;padding:4px;")
-        lo.addWidget(self._status)
+        self._status = StatusLabel("就绪")
+        layout.addWidget(self._status)
 
     def _on_schemes_changed(self):
         self._selector.refresh()
-        self._status.setText("方案列表已更新")
+        self._status.set_message("列表已更新")
 
     def _on_manage_scheme(self):
         """打开方案管理面板：从当前选择开始，或继续编辑已有的未保存方案。"""
@@ -431,7 +450,7 @@ class ScreenFilterDemo(QMainWindow):
             # 面板里还有没保存的改动：直接复用，别把工作丢掉
             self._manager.show()
             self._manager.raise_()
-            self._status.setText("方案管理面板已打开（有未保存修改）")
+            self._status.set_message("面板已打开（有未保存修改）")
             return
 
         scheme = self._selector.current_scheme()
@@ -445,12 +464,12 @@ class ScreenFilterDemo(QMainWindow):
             self._manager.set_scheme(scheme, notify=False)
         self._manager.show()
         self._manager.raise_()
-        self._status.setText("方案管理面板已打开")
+        self._status.set_message("面板已打开")
 
     def _on_create(self):
         scheme = self._selector.current_scheme()
         if scheme is None:
-            QMessageBox.warning(self, "提示", "请选择一个滤镜或已保存方案")
+            alert(self, "提示", "请选择滤镜或方案")
             return
 
         win = ScreenFilterWindow(scheme)
@@ -459,7 +478,7 @@ class ScreenFilterDemo(QMainWindow):
         win.move(80 + off, 80 + off)
         win.start()
         win.destroyed.connect(lambda: self._on_closed(win))
-        self._status.setText(f"\u2705 创建: {scheme.display_name()}")
+        self._status.set_message(f"创建：{scheme.display_name()}", State.ACCENT)
 
     def _on_closed(self, win: ScreenFilterWindow):
         if win in self._windows:
@@ -505,7 +524,9 @@ def create_screen_filter(
 
 
 def run_demo():
+    configure_application()
     app = QApplication.instance() or QApplication(sys.argv)
+    apply_theme(app)
     demo = ScreenFilterDemo()
     demo.show()
     sys.exit(app.exec())

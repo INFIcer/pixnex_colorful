@@ -22,7 +22,8 @@ import sys
 import time
 from typing import Any, Optional, cast
 
-import psutil
+# 不要在模块顶层 import psutil：psutil 的导入会触发 UDM Paint 的进程保护，
+# 使随后 UDM 的内存同步无法 OpenProcess。Photoshop 需要时再延迟导入。
 
 try:
     import pythoncom
@@ -233,6 +234,7 @@ class PhotoshopSync:
             self._proc_handle = self.K32.OpenProcess(0x00100000, False, self._pid)
             if not self._proc_handle:
                 try:
+                    import psutil
                     return any(
                         p.info["pid"] == self._pid
                         for p in psutil.process_iter(["pid"])

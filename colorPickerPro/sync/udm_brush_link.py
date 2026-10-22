@@ -22,6 +22,7 @@ import math
 import os
 import struct
 import sys
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -43,6 +44,7 @@ from .brush_color_spaces import (
     resolve_active_rgb,
     rgb_to_space_values,
 )
+from .window_focus import pids_for_process_names
 
 SECTION_NAME = "UDMPaint"
 DEFAULT_VERSION_KEY = "udm4.0"
@@ -195,19 +197,63 @@ class UDMSync:
         return False
 
     def _try_open_with(self, profile: _UDMBuildProfile) -> bool:
+        # UDM 不会出现在普通进程枚举里；用窗口反查 PID 后再按 PID 打开。
+        # 它的进程保护偶尔会拒绝一次 OpenProcess，所以短暂重试几次。
         try:
-            self.pm = Pymem(profile.process_name)
-            self.pid = self.pm.process_id
-            mod = module_from_name(self.pm.process_handle, profile.process_name)
+            pids = pids_for_process_names((profile.process_name,))
+        except Exception:
+            pids = []
+        for pid in pids:
+            for attempt in range(3):
+                try:
+                    pm = Pymem(pid)
+                except Exception as exc:
+                    _log(f"open pid {pid} attempt {attempt}: {exc!r}")
+                    time.sleep(0.08)
+                    continue
+                if self._finish_attach(pm, profile):
+                    return True
+                time.sleep(0.08)
+        if pids:
+            # 找到窗口 PID 时只按 PID 打开：此时再按名字枚举进程会再次触发
+            # UDM 的进程保护，让下一轮更打不开。
+            self._drop_connection()
+            return False
+        # 兜底：按 exe 名打开（没有顶层窗口的普通进程）。
+        for _attempt in range(2):
+            try:
+                pm = Pymem(profile.process_name)
+            except Exception:
+                time.sleep(0.1)
+                continue
+            if self._finish_attach(pm, profile):
+                return True
+        self._drop_connection()
+        return False
+
+    def _finish_attach(self, pm, profile: _UDMBuildProfile) -> bool:
+        try:
+            mod = module_from_name(pm.process_handle, profile.process_name)
+            if mod is None:
+                mod = module_from_name(
+                    pm.process_handle,
+                    os.path.splitext(profile.process_name)[0])
             if mod is None:
                 raise ValueError("module not found")
-            module_base = mod.lpBaseOfDll
-            self.module_base = module_base
-            ptr_addr = module_base + profile.base_offset
-            self.target = int(self.pm.read_longlong(ptr_addr))
+            self.pm = pm
+            self.pid = pm.process_id
+            self.module_base = mod.lpBaseOfDll
+            self.target = int(
+                pm.read_longlong(self.module_base + profile.base_offset))
+            _log(f"attached to {profile.process_name} pid={self.pid} "
+                 f"base=0x{self.module_base:X}")
             return True
-        except Exception:
-            self._drop_connection()
+        except Exception as exc:
+            _log(f"attach {profile.process_name} failed: {exc!r}")
+            try:
+                pm.close_process()
+            except Exception:
+                pass
             return False
 
     def _drop_connection(self) -> None:
@@ -365,8 +411,8 @@ class UDMSync:
         return _PROCESS_NAMES
 
     def status(self) -> dict[str, object]:
-        if self.pm is None:
-            self.connect()
+        # 不在这里重新连接：连接由 get_color()/set_color() 负责。否则一轮
+        # 轮询会重复尝试连接，状态更新会被拖慢。
         space_addrs = self._resolve_space_addresses() if self.pm is not None else None
         connected = (
             self.pm is not None

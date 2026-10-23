@@ -8,9 +8,10 @@ u32-per-channel encoding and regular RGB triples.
 Two address-resolution modes are supported:
 
 * **pointer mode** (default) — chase a build-specific anchor pointer from
-  the loaded module base to the live color slot, with re-validation on
-  every access so a transient zero-initialized buffer cannot hijack the
-  resolved target.
+  the loaded module base to the live color slot on every access.  The anchor
+  is authoritative: when UDM reallocates the color object (restart, other
+  document) the resolved slot is re-read from it instead of pinning the
+  first absolute address.
 * **absolute mode** — bypass the pointer chase and use fixed addresses
   from ``config.ini``.
 """
@@ -35,7 +36,6 @@ except ImportError:  # pragma: no cover
 
 from .brush_color_spaces import (
     SPACE_ORDER,
-    any_space_has_nonzero_raws,
     build_space_addresses,
     build_space_offsets,
     decode_space_raws,
@@ -307,17 +307,19 @@ class UDMSync:
         if self.module_base is None:
             return None
 
+        # 每次访问都重新读取锚点指针：UDM 重启、切换文档或重建颜色对象后
+        # 颜色槽地址会变，只有始终跟随锚点才是正确的。以前只在“新指向的槽
+        # 内容非全 0”时才更新 target，一旦新槽恰好是纯黑（0,0,0），就会一直
+        # 读写旧地址（相当于把第一次解析到的绝对地址当成常量），重启后同步
+        # 看似连上却完全不生效。
         try:
-            fresh_pointer = int(self.pm.read_longlong(self.module_base + self.base_offset))
-            if fresh_pointer:
-                try:
-                    probe = self._snapshot_color_slot(fresh_pointer)
-                    if any_space_has_nonzero_raws(probe) or self.target is None:
-                        self.target = fresh_pointer
-                except Exception:
-                    pass
+            fresh_pointer = int(
+                self.pm.read_longlong(self.module_base + self.base_offset))
         except Exception:
-            pass
+            fresh_pointer = 0
+
+        if fresh_pointer and fresh_pointer != self.target:
+            self.target = fresh_pointer
 
         if self.target is None:
             self._count_resolve_failure()

@@ -16,6 +16,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from .win_process import iter_process_image_names
+
 PROCESS_NAME = "Photoshop.exe"
 COM_KIND = "com"
 SCRIPT_BRIDGE_KIND = "script-bridge"
@@ -33,16 +35,13 @@ class PhotoshopInstance:
 
 
 def find_running_photoshop() -> list[tuple[int, str]]:
-    import psutil
-
+    """``(pid, exe path)`` of every running Photoshop (native lookup)."""
+    wanted = PROCESS_NAME.lower()
     out: list[tuple[int, str]] = []
     try:
-        for proc in psutil.process_iter(["pid", "name", "exe"]):
-            try:
-                if proc.info["name"] == PROCESS_NAME and proc.info.get("exe"):
-                    out.append((proc.info["pid"], proc.info["exe"]))
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+        for pid, path in iter_process_image_names():
+            if os.path.basename(path).lower() == wanted:
+                out.append((pid, path))
     except Exception:
         pass
     return out

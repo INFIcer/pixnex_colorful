@@ -1,9 +1,10 @@
 """Regression tests for the UDM colour-sync wiring (plain asserts, stdlib).
 
-The UDM backend is sensitive: importing psutil anywhere before opening the
-UDM process makes UDM's protection deny the memory handle, and constructing
-the Photoshop backend eagerly used to do exactly that.  These tests keep the
-lazy-import/lazy-backend contract from regressing.
+The UDM backend is sensitive: importing psutil anywhere in the pixnex process
+makes UDM Paint's process protection deny memory access for the rest of the
+process lifetime.  Historically that broke every reconnect after a UDM restart
+(the UI stayed on 连接中…).  These tests keep the "sync subsystem never imports
+psutil" contract and the lazy-backend contract from regressing.
 """
 
 import subprocess
@@ -62,11 +63,51 @@ def test_udm_window_pid_lookup_does_not_open_target_handles():
         "窗口 PID 解析不应 OpenProcess 目标进程（会阻断 UDM 内存访问）")
 
 
+def test_sync_package_never_imports_psutil():
+    """整个同步子系统都不得 import psutil。
+
+    导入 psutil 会让 UDM Paint 的进程保护永久拒绝本进程的内存访问；这正是
+    “重启 UDM 后同步一直显示连接中”的根因，因此进程查询改用原生
+    :mod:`colorPickerPro.sync.win_process`。
+    """
+    output = _run_python(
+        "import sys; "
+        "import colorPickerPro.sync; "
+        "import colorPickerPro.sync.photoshop_instances; "
+        "import colorPickerPro.sync.photoshop_color_sync; "
+        "print('psutil' in sys.modules)")
+    assert output == "False", f"psutil was imported by the sync package: {output!r}"
+
+
+def test_process_resolution_without_windows_never_imports_psutil():
+    """窗口找不到时的进程名兜底同样不得 import psutil。"""
+    output = _run_python(
+        "import sys; import colorPickerPro.sync.window_focus as wf; "
+        "wf._window_pids_for_names = lambda names: []; "
+        "pids = wf.pids_for_process_names(('UDMPaintPRO.exe',)); "
+        "assert isinstance(pids, list); "
+        "print('psutil' in sys.modules)")
+    assert output == "False", f"psutil was imported while resolving a pid: {output!r}"
+
+
+def test_sync_sources_do_not_import_psutil():
+    """源码级守门：同步模块里不允许再出现 psutil 导入。"""
+    import re
+
+    pattern = re.compile(r"(?m)^\s*(?:import\s+psutil\b|from\s+psutil\s+import\b)")
+    for path in sorted((ROOT / "colorPickerPro" / "sync").glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        assert pattern.search(source) is None, f"{path.name} imports psutil"
+
+
 def _main() -> int:
     tests = [
         test_sync_import_does_not_load_psutil,
         test_sync_controller_constructs_backends_lazily,
         test_udm_window_pid_lookup_does_not_open_target_handles,
+        test_sync_package_never_imports_psutil,
+        test_process_resolution_without_windows_never_imports_psutil,
+        test_sync_sources_do_not_import_psutil,
     ]
     failed = 0
     for test in tests:

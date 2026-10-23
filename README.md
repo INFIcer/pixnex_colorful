@@ -103,11 +103,16 @@
 .venv\Scripts\python.exe tests\ui_layout_check.py
 .venv\Scripts\python.exe tests\ui_layout_check.py --dpi-pass 1.5
 
-# 颜色同步回归（UDM 后端延迟导入 / 懒加载 / 窗口 PID 解析约束）
+# 颜色同步回归（同步子系统不得 import psutil / 懒加载 / 窗口 PID 解析约束）
 .venv\Scripts\python.exe tests\test_sync_udm_regression.py
+
+# UDM 颜色槽地址解析（锚点指针变化后必须跟随新地址）
+.venv\Scripts\python.exe tests\test_sync_udm_address.py
 ```
 
 巡检截图输出到 `build/ui-shots/`，报告见 `build/ui-shots/latest_report.txt`。
+
+> 注意：`colorPickerPro/sync/` 内**禁止 `import psutil`**。导入 psutil 会让 UDM Paint 的进程保护永久拒绝本进程的内存访问（重启 UDM 也不会恢复），表现为同步一直停在“连接中…”。需要进程查询时统一使用 `sync/win_process.py` 的原生 Win32 实现。
 
 ---
 

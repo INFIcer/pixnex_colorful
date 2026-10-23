@@ -22,6 +22,8 @@ import os
 import sys
 from dataclasses import dataclass
 
+from .win_process import find_process_pids
+
 IS_WINDOWS = sys.platform == "win32"
 
 # 进程不出现在普通枚举里时，用窗口标题/类名里的这些标记识别它。
@@ -91,8 +93,13 @@ def pids_for_process_names(names) -> "list[int]":
     """Running pids whose executable name matches ``names`` (case-insensitive).
 
     Window matching runs first: some drawing apps (UDM Paint) deny a later
-    ``OpenProcess`` for a while after psutil scans them, so the target process
-    must not be touched before the real handle is opened.
+    ``OpenProcess`` for a while after broad process scans, so the target
+    process must not be touched before the real handle is opened.
+
+    The fallback deliberately uses the native EnumProcesses helper instead of
+    :mod:`psutil`: importing psutil makes UDM Paint's process protection deny
+    memory access to this process for good (see :mod:`.win_process`), which
+    used to break UDM colour sync after a UDM restart.
     """
     wanted = {str(n).lower() for n in names if n}
     if not wanted or not IS_WINDOWS:
@@ -107,18 +114,9 @@ def pids_for_process_names(names) -> "list[int]":
     if pids:
         return pids
 
-    try:
-        import psutil
-    except ImportError:  # pragma: no cover - psutil ships with the app
-        return pids
-    try:
-        for proc in psutil.process_iter(["pid", "name"]):
-            if (proc.info.get("name") or "").lower() in wanted:
-                pid = int(proc.info["pid"])
-                if pid not in pids:
-                    pids.append(pid)
-    except Exception:
-        pass
+    for pid in find_process_pids(names):
+        if pid not in pids:
+            pids.append(pid)
     return pids
 
 
@@ -324,8 +322,8 @@ class WindowFocusReturner:
             if self._try_pid(int(pid)):
                 return True
 
-        # 后端还没连上（拿不到 pid）时的兜底：按进程名找。psutil 要扫描整个
-        # 进程表，所以只在 pid 这条路走不通时才走它。
+        # 后端还没连上（拿不到 pid）时的兜底：按进程名找。窗口枚举优先，
+        # 不做会触发 UDM 进程保护的 psutil 扫描。
         for candidate in pids_for_process_names(process_names):
             if pid and candidate == int(pid):
                 continue

@@ -102,8 +102,12 @@ class MyDialog(ThemedDialog):
 - 弹窗显示时前置（`raise + activate`）；父窗口置顶时弹窗自动继承置顶；
 - 关闭时移除全局事件过滤器。
 
-主窗口额外约定：标题栏只有「置顶（图钉）/最小化/关闭」，没有最大化；图钉切换
-`WindowStaysOnTopHint`。对话框标题栏只有关闭按钮。
+主窗口额外约定：标题栏有「自动折叠 / 置顶（图钉）/ 最小化 / 关闭」，没有最大化；
+置顶切换 `WindowStaysOnTopHint`；自动折叠开启后，鼠标离开主窗口区域就折叠成一条
+标题栏，移入标题栏再展开（折叠高度 = 标题栏 30 + 上下边框 2）。主窗口通过
+`window_state.WindowStateStore` 保存自动折叠、置顶与窗口位置尺寸：`main()` 注入
+`WindowStateStore.persistent()`（INI 文件），测试/预览用默认的内存存储。对话框
+标题栏只有关闭按钮。
 
 主窗口标题栏最左侧显示应用图标（`init_frameless(..., icon=app_icon())`）：
 - 图标来自 `colorPickerPro/ui/app_icon.py`，实际文件是项目根的 `pixnex.ico`（由
@@ -150,6 +154,9 @@ class MyWindow(FramelessWindowMixin, QMainWindow):   # 或 QDialog / QWidget
 | `ThemedDialog` | `set_title/set_subtitle`、`add_content`、`make_body_scrollable`、footer 按钮 | 全部业务对话框 |
 | `IconButton` | `IconButton("svg名")`、`set_icon("svg名")` | 所有图标按钮 |
 | `customFrame.CustomFramelessWindow` | `content_rect_global()`、`add_title_bar_button()`、`toggle_collapse()`、`is_collapsed()` | `screenFilter` |
+| `main.MainWindow` | `is_collapsed()`、`toggle_collapse()`；`MainWindow(state_store=...)` 可注入状态存储 | `main.py` / 测试 |
+| `window_state.WindowStateStore` | `load()` / `save(WindowState)` / `persistent()`；`WindowState(auto_collapse, always_on_top, geometry)` | `main.py` |
+| `window_state.clamp_geometry` | 把恢复的窗口矩形夹进屏幕可用区域 | `main.py` / 测试 |
 | `color_picker_widgets` | `set_model()` / `remove_listener()` | `main.py` / 取色对话框 |
 
 ## 7. 自带验证
@@ -160,8 +167,10 @@ class MyWindow(FramelessWindowMixin, QMainWindow):   # 或 QDialog / QWidget
 .venv\Scripts\python.exe tools\render_widget.py          # 任意窗口多尺寸截图
 .venv\Scripts\python.exe tests\ui_layout_check.py --dpi-pass 1.5
 .venv\Scripts\python.exe tests\test_sync_udm_regression.py
+.venv\Scripts\python.exe tests\test_window_state.py      # 自动折叠 + 窗口状态持久化
 ```
 
 巡检断言：窗口均 frameless 且有 TitleBar、边框可见、边缘拖动缩放正确、
 无字符图标、SVG 引用存在、无越界/裁切、静态无 `setStyleSheet`；截图在 `build/ui-shots/`。
+主窗口自动折叠的冒烟检查也包含在 `tests/ui_layout_check.py`（`func:auto_collapse`）。
 颜色同步回归测试保证 UDM 后端保持延迟导入/懒加载（提前 import psutil 会让 UDM 拒绝内存访问）。

@@ -90,6 +90,12 @@ ICONS = {
         '<path d="M5.4 2.6 H10.6 L9.5 5.2 V7.2 L11.2 9.4 H4.8 L6.5 7.2 V5.2 Z"/>'
         '<path d="M8 9.4 V13.4"/>'
     ),
+    # 主窗口自动折叠：窗口连同标题栏，箭头指向标题栏（内容收进标题栏）。
+    "collapse": (
+        '<rect x="2.6" y="3.6" width="10.8" height="8.8" rx="1"/>'
+        '<path d="M2.6 6.4 H13.4"/>'
+        '<path d="M8 11.6 V7.8 M6.2 9.6 L8 7.8 L9.8 9.6"/>'
+    ),
     "flip-h": (
         '<path d="M8 2.4 V13.6" stroke-dasharray="1.6 1.8"/>'
         '<path d="M5.4 5 L2.4 8 L5.4 11"/>'
@@ -123,7 +129,8 @@ def main() -> None:
     icons.mkdir(parents=True, exist_ok=True)
     for name, body in ICONS.items():
         path = icons / f"{name}.svg"
-        path.write_text(_svg(name, body), encoding="utf-8")
+        # 固定 LF：素材文件在仓库里按 LF 存放，不受 Windows 换行设置影响。
+        path.write_text(_svg(name, body), encoding="utf-8", newline="\n")
         print("wrote", path.relative_to(ROOT))
 
 

@@ -18,7 +18,8 @@
 4. 静态扫描：setStyleSheet=0、emoji=0、UI 文案无图标字符、IconButton/ set_icon
    引用的 SVG 资源齐全、QSS url() 资源存在且不再引用 PNG；
 5. 功能冒烟：模型切换 / 参数区重建 / 查看器变换 / 弹窗确认 / 方案保存 /
-   屏幕滤镜定时器 / sync 状态 / 标题栏按钮 / 关闭按钮 / 最大化切换；
+   屏幕滤镜定时器 / sync 状态 / 标题栏按钮 / 关闭按钮 / 最大化切换 /
+   主窗口自动折叠；
 6. 打印一行一个界面的 PASS/FAIL 报告并汇总，有 FAIL 时退出码为 1。
 
 刻意不设置 QT_QPA_PLATFORM=offscreen：offscreen 插件没有系统字体，截图会变成
@@ -923,6 +924,9 @@ def _run_functional_checks(fixtures: Fixtures,
             verify_buttons(picker, "ColorPickerDialog", False, False)
             assert picker.title_bar.isVisible(), "ColorPickerDialog 标题栏不可见"
         finally:
+            # 必须 close：ColorPickerDialog 是 WindowModal，只 deleteLater
+            # 会让它保持可见并继续充当 activeModalWidget，影响后续检查。
+            picker.close()
             picker.deleteLater()
             QApplication.processEvents()
 
@@ -938,6 +942,12 @@ def _run_functional_checks(fixtures: Fixtures,
                 f"置顶按钮图标应为 'pin'，实际 {pin.icon_name()!r}")
             assert pin.isCheckable(), "置顶按钮应为可切换状态"
             assert not pin.icon().isNull(), "置顶按钮 SVG 图标为空"
+            auto = getattr(win, "_auto_collapse_btn", None)
+            assert auto is not None, "MainWindow 缺少自动折叠按钮"
+            assert auto.icon_name() == "collapse", (
+                f"自动折叠按钮图标应为 'collapse'，实际 {auto.icon_name()!r}")
+            assert auto.isCheckable(), "自动折叠按钮应为可切换状态"
+            assert not auto.icon().isNull(), "自动折叠按钮 SVG 图标为空"
         finally:
             teardown_main_window(win)
             QApplication.processEvents()
@@ -1105,6 +1115,52 @@ def _run_functional_checks(fixtures: Fixtures,
             compare.deleteLater()
             QApplication.processEvents()
 
+    # ---- 11b. 主窗口自动折叠：离开折叠为标题栏 / 进入展开 ---------------
+    def check_auto_collapse() -> None:
+        from PySide6.QtCore import QPoint
+        from colorPickerPro.main import MainWindow
+        from colorPickerPro.ui.tokens import SIZE
+
+        win = MainWindow()
+        try:
+            harness.prepare(win)
+            harness.settle(win)
+            button = getattr(win, "_auto_collapse_btn", None)
+            assert button is not None, "主窗口缺少自动折叠按钮"
+            assert button.icon_name() == "collapse", (
+                f"自动折叠按钮图标应为 'collapse'，实际 {button.icon_name()!r}")
+            assert button.isCheckable(), "自动折叠按钮应为可切换状态"
+            assert not button.icon().isNull(), "自动折叠按钮 SVG 图标为空"
+            assert win.is_collapsed() is False, "主窗口初始不应折叠"
+
+            button.setChecked(True)
+            QApplication.processEvents()
+            win._auto_collapse_timer.stop()   # 手动驱动，避免真实光标干扰
+            win._auto_collapse_step(QPoint(-99999, -99999))
+            QApplication.processEvents()
+            harness.settle(win)
+            assert win.is_collapsed(), "鼠标离开后主窗口没有折叠"
+            assert win.height() == SIZE.title_bar_height + 2, (
+                f"折叠后应只剩标题栏，实际高度 {win.height()}")
+            assert win._body.isHidden(), "折叠后内容区应隐藏"
+
+            win._auto_collapse_step(win.geometry().center())
+            QApplication.processEvents()
+            harness.settle(win)
+            assert not win.is_collapsed(), "鼠标进入标题栏后主窗口没有展开"
+            assert win._body.isVisible(), "展开后内容区应恢复显示"
+
+            button.setChecked(False)
+            QApplication.processEvents()
+            assert win._auto_collapse_enabled is False
+            assert not win._auto_collapse_timer.isActive(), (
+                "关闭自动折叠后轮询定时器应停止")
+        finally:
+            teardown_main_window(win)
+            QApplication.processEvents()
+            win.deleteLater()
+            QApplication.processEvents()
+
     # ---- 12. 手动边缘缩放（应用级事件过滤器）+ 1px 边框 ---------------
     def check_frameless_resize_and_rounding() -> None:
         from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
@@ -1226,6 +1282,7 @@ def _run_functional_checks(fixtures: Fixtures,
     record("titlebar_buttons", check_titlebar_buttons)
     record("titlebar_close", check_titlebar_close)
     record("titlebar_maximize", check_titlebar_maximize)
+    record("auto_collapse", check_auto_collapse)
     record("frameless_resize_round", check_frameless_resize_and_rounding)
     return checks
 
@@ -1332,7 +1389,8 @@ def main(argv: list[str] | None = None) -> int:
          "两层都必须为空。")
     emit("      静态检查: setStyleSheet=0、emoji=0、UI 文案无图标字符、"
          "SVG 图标资源齐全、QSS url() 无缺失/无 PNG。")
-    emit("      功能冒烟: 模型切换/参数重建/查看器变换/弹窗/标题栏按钮/关闭/最大化。")
+    emit("      功能冒烟: 模型切换/参数重建/查看器变换/弹窗/标题栏按钮/关闭/最大化/"
+         "自动折叠。")
     if args.only:
         emit(f"筛选: --only {args.only!r}")
     emit("=" * 100)

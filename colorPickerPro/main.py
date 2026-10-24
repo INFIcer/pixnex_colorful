@@ -21,6 +21,9 @@ from PySide6.QtWidgets import (
     QMainWindow, QPlainTextEdit, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from .auto_collapse import (
+    AUTO_COLLAPSE_POLL_MS, modal_or_popup_open, mouse_button_pressed,
+)
 from .color_picker_widgets import (
     ALL_MODELS,
     BaseColorModel,
@@ -55,37 +58,11 @@ _TEXT_EDIT_WIDGETS = (
     QAbstractSpinBox, QLineEdit, QTextEdit, QPlainTextEdit,
 )
 
-# 自动折叠：定时轮询光标位置，鼠标离开/进入窗口后最迟这么久响应一次。
-_AUTO_COLLAPSE_POLL_MS = 120
-
 # 折叠后只保留标题栏，外加 1px 上边框与 1px 下边框。
 _COLLAPSED_EXTRA = 2
 
 # Qt 中“不限制最大尺寸”的约定值。
 _QT_SIZE_UNLIMITED = 16777215
-
-# Win32 虚拟键码：左 / 右 / 中键（用于读取鼠标物理按键状态）。
-_VK_LBUTTON, _VK_RBUTTON, _VK_MBUTTON = 0x01, 0x02, 0x04
-
-
-def _mouse_button_pressed() -> bool:
-    """鼠标按键此刻是否真的被按住（判断拖拽是否未结束）。
-
-    这里不能用 ``QApplication.mouseButtons()``：屏幕取色器 / 覆盖层在
-    ``mousePressEvent`` 里就隐藏自己，物理松键事件不会再进入本进程，Qt 的
-    按键状态会永远停在 press 上，自动折叠就再也不会触发。Windows 下用
-    ``GetAsyncKeyState`` 读取物理状态；其他平台退回 Qt 状态。
-    """
-    if sys.platform == "win32":
-        try:
-            import ctypes
-
-            user32 = ctypes.windll.user32
-            return any(user32.GetAsyncKeyState(vk) & 0x8000
-                       for vk in (_VK_LBUTTON, _VK_RBUTTON, _VK_MBUTTON))
-        except Exception:
-            pass
-    return QApplication.mouseButtons() != Qt.MouseButton.NoButton
 
 
 # 状态标签文案 → 语义颜色。「未启动」是提示而不是错误，用 warning 色；
@@ -122,7 +99,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
 
         # 自动折叠轮询：只在开关打开且窗口可见时运行。
         self._auto_collapse_timer = QTimer(self)
-        self._auto_collapse_timer.setInterval(_AUTO_COLLAPSE_POLL_MS)
+        self._auto_collapse_timer.setInterval(AUTO_COLLAPSE_POLL_MS)
         self._auto_collapse_timer.timeout.connect(self._on_auto_collapse_tick)
 
         self._model: BaseColorModel = OKLCHModel()
@@ -393,14 +370,10 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             return
         if self.isMinimized() or self.isMaximized():
             return                      # 最小化 / 最大化时先不折叠，避免破坏窗口状态
-        if _mouse_button_pressed():
+        if mouse_button_pressed():
             return                      # 正在拖拽（取色 / 移动 / 缩放）
-        modal = QApplication.activeModalWidget()
-        if modal is not None and modal.isVisible():
-            return                      # 模态对话框打开时鼠标本来就在窗口外
-        popup = QApplication.activePopupWidget()
-        if popup is not None and popup.isVisible():
-            return                      # 下拉菜单等弹出层可能盖在窗口外
+        if modal_or_popup_open():
+            return                      # 模态对话框 / 弹出层打开时鼠标本来就在窗口外
         inside = self.geometry().contains(cursor_pos)
         if self._collapsed:
             if inside:

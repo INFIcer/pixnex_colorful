@@ -86,6 +86,7 @@
 | 操作 | 效果 |
 |---|---|
 | 双击标题栏 / 按空格键 | 折叠窗口（仅保留标题栏），再次操作展开 |
+| 自动折叠（标题栏图标） | 开启后鼠标离开窗口自动收起为标题栏、移入标题栏展开；手动折叠 / 展开会同时关闭自动折叠 |
 | 暂停 / 继续（标题栏图标） | 暂停或恢复实时捕获 |
 | 设置（标题栏图标） | 打开或关闭滤镜方案管理面板（图层管理 + 被选滤镜的参数） |
 
@@ -127,6 +128,9 @@
 
 # 主窗口自动折叠 + 自动折叠/置顶/位置尺寸状态持久化
 .venv\Scripts\python.exe tests\test_window_state.py
+
+# 屏幕滤镜窗口自动折叠（手动折叠/展开会关闭自动折叠）
+.venv\Scripts\python.exe tests\test_screen_filter_auto_collapse.py
 
 # 图像拖放控件：拖入图像是否显示在控件里（默认不显示，仍会发出 imageReceived）
 .venv\Scripts\python.exe tests\test_image_drop.py

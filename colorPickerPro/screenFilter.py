@@ -25,7 +25,7 @@ from typing import List
 import numpy as np
 import mss
 
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QCursor
 from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QVBoxLayout, QMenu,
@@ -33,6 +33,9 @@ from PySide6.QtWidgets import (
 if __name__ == "__main__" and (__package__ is None or __package__ == ''):
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from colorPickerPro.auto_collapse import (
+        AUTO_COLLAPSE_POLL_MS, modal_or_popup_open, mouse_button_pressed,
+    )
     from colorPickerPro.filter_lib import ImageFilter, ImageConvert
     from colorPickerPro.customFrame import CustomFramelessWindow, PixmapWidget
     from colorPickerPro.filter_scheme import FilterScheme, to_scheme
@@ -46,6 +49,9 @@ if __name__ == "__main__" and (__package__ is None or __package__ == ''):
     )
     from colorPickerPro.ui.tokens import SPACE, State, qcolor
 else:
+    from .auto_collapse import (
+        AUTO_COLLAPSE_POLL_MS, modal_or_popup_open, mouse_button_pressed,
+    )
     from .filter_lib import ImageFilter, ImageConvert
     from .customFrame import CustomFramelessWindow, PixmapWidget
     from .filter_scheme import FilterScheme, to_scheme
@@ -104,6 +110,8 @@ class ScreenFilterWindow(CustomFramelessWindow):
     特性：
     - 无边框置顶，始终显示滤镜方案处理后的画面
     - 标题栏拖动，边缘/角缩放（交给窗口系统处理）
+    - 自动折叠按钮：鼠标离开窗口自动收起为标题栏，移入标题栏展开；
+      双击标题栏 / 空格键手动折叠或展开时同时关闭自动折叠
     - 暂停/继续捕获按钮（暂停时画面冻结，禁止缩放）
     - 可见的边框：捕获中为强调色，暂停时变暗
     - 设置按钮打开滤镜方案管理面板（图层化增删/排序滤镜并编辑参数）
@@ -136,6 +144,13 @@ class ScreenFilterWindow(CustomFramelessWindow):
         self._timer.timeout.connect(self._tick)
         self._timer.setTimerType(Qt.PreciseTimer)
 
+        # 自动折叠：鼠标离开窗口 → 收起为标题栏，移入标题栏 → 展开。
+        self._auto_collapse_enabled = False
+        self._btn_auto_collapse: IconButton | None = None
+        self._auto_collapse_timer = QTimer(self)
+        self._auto_collapse_timer.setInterval(AUTO_COLLAPSE_POLL_MS)
+        self._auto_collapse_timer.timeout.connect(self._on_auto_collapse_tick)
+
         self._build_filter_ui()
 
     def _setup_affinity(self):
@@ -149,6 +164,12 @@ class ScreenFilterWindow(CustomFramelessWindow):
             pass
 
     def _build_filter_ui(self):
+        # 标题栏按钮：自动折叠 / 暂停捕获 / 滤镜方案。
+        self._btn_auto_collapse = IconButton(
+            "collapse", tooltip="鼠标离开后折叠为标题栏", checkable=True)
+        self._btn_auto_collapse.toggled.connect(self._on_auto_collapse_toggled)
+        self.add_title_bar_button(self._btn_auto_collapse)
+
         self._btn_pause = IconButton("pause", tooltip="暂停捕获")
         self._btn_pause.clicked.connect(self._toggle_capture)
         self.add_title_bar_button(self._btn_pause)
@@ -158,6 +179,76 @@ class ScreenFilterWindow(CustomFramelessWindow):
         self.add_title_bar_button(self._btn_params)
 
         self.set_content_widget(PixmapWidget())
+
+    # ------------------------------------------------------------------
+    # 自动折叠
+    # ------------------------------------------------------------------
+    def toggle_collapse(self):
+        """手动折叠 / 展开（双击标题栏、空格键）：同时关闭自动折叠。"""
+        self._disable_auto_collapse_silently()
+        super().toggle_collapse()
+
+    def _on_auto_collapse_toggled(self, enabled: bool):
+        self._auto_collapse_enabled = bool(enabled)
+        self._sync_auto_collapse_timer()
+        if not self._auto_collapse_enabled and self._collapsed:
+            super().toggle_collapse()   # 关掉开关立即展开，不能留在折叠状态
+
+    def _disable_auto_collapse_silently(self):
+        """手动折叠 / 展开时关闭自动折叠。
+
+        必须先关掉开关再执行手动动作；这里不触发"关闭开关就展开"的逻辑，
+        否则手动"展开"会先被它展开、再被 ``super().toggle_collapse()`` 收起。
+        """
+        if not self._auto_collapse_enabled:
+            return
+        self._auto_collapse_enabled = False
+        self._sync_auto_collapse_timer()
+        button = self._btn_auto_collapse
+        if button is not None:
+            button.blockSignals(True)
+            try:
+                button.setChecked(False)
+            finally:
+                button.blockSignals(False)
+
+    def _sync_auto_collapse_timer(self):
+        running = self._auto_collapse_enabled and self.isVisible()
+        if running and not self._auto_collapse_timer.isActive():
+            self._auto_collapse_timer.start()
+        elif not running and self._auto_collapse_timer.isActive():
+            self._auto_collapse_timer.stop()
+
+    def _on_auto_collapse_tick(self):
+        self._auto_collapse_step(QCursor.pos())
+
+    def _auto_collapse_step(self, cursor_pos: QPoint):
+        """按光标位置折叠 / 展开。参数显式传入，测试不需要移动真实鼠标。"""
+        if not self._auto_collapse_enabled or not self.isVisible():
+            return
+        if self.isMinimized() or self.isMaximized():
+            return
+        if mouse_button_pressed():
+            return                      # 正在拖拽（移动 / 缩放）
+        if modal_or_popup_open():
+            return                      # 模态对话框 / 弹出层打开时鼠标本来就在窗口外
+        if self._scheme_panel is not None and self._scheme_panel.isVisible():
+            return                      # 正在编辑方案：面板在窗口外，不算离开
+        inside = self.geometry().contains(cursor_pos)
+        if self._collapsed:
+            if inside:
+                super().toggle_collapse()
+        elif not inside:
+            super().toggle_collapse()
+
+    # ---- 窗口显示 / 隐藏 -------------------------------------------------
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._sync_auto_collapse_timer()
+
+    def hideEvent(self, event):
+        self._auto_collapse_timer.stop()
+        super().hideEvent(event)
 
     def _toggle_capture(self):
         self._capturing = not self._capturing
@@ -365,6 +456,7 @@ class ScreenFilterWindow(CustomFramelessWindow):
 
     def closeEvent(self, e):
         self._timer.stop()
+        self._auto_collapse_timer.stop()
         if self._scheme_panel is not None:
             self._scheme_panel.close()
             self._scheme_panel = None

@@ -333,7 +333,7 @@ def test_auto_collapse_survives_stale_qt_mouse_state():
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QWidget
 
-    from colorPickerPro.main import _mouse_button_pressed
+    from colorPickerPro.auto_collapse import mouse_button_pressed
 
     store = _temp_store()
     store.save(WindowState(auto_collapse=True, geometry=(150, 150, 400, 660)))
@@ -353,7 +353,7 @@ def test_auto_collapse_survives_stale_qt_mouse_state():
             app.processEvents()
             assert QApplication.mouseButtons() != Qt.MouseButton.NoButton, (
                 "没能造出 Qt 按键状态残留，测试前提不成立")
-            assert _mouse_button_pressed() is False, (
+            assert mouse_button_pressed() is False, (
                 "物理按键已松开，不应再认为在拖拽")
             win._auto_collapse_step(QPoint(-99999, -99999))
             assert win.is_collapsed(), (

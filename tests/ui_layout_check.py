@@ -19,7 +19,7 @@
    引用的 SVG 资源齐全、QSS url() 资源存在且不再引用 PNG；
 5. 功能冒烟：模型切换 / 参数区重建 / 查看器变换 / 弹窗确认 / 方案保存 /
    屏幕滤镜定时器 / sync 状态 / 标题栏按钮 / 关闭按钮 / 最大化切换 /
-   主窗口自动折叠；
+   主窗口与屏幕滤镜窗口自动折叠；
 6. 打印一行一个界面的 PASS/FAIL 报告并汇总，有 FAIL 时退出码为 1。
 
 刻意不设置 QT_QPA_PLATFORM=offscreen：offscreen 插件没有系统字体，截图会变成
@@ -879,8 +879,54 @@ def _run_functional_checks(fixtures: Fixtures,
             assert win._timer.isActive() is False, "ScreenFilterWindow 构造后 _timer 已在跑"
             assert win._debounce_timer.isActive() is False, (
                 "ScreenFilterWindow 构造后 _debounce_timer 已在跑")
+            assert win._auto_collapse_timer.isActive() is False, (
+                "ScreenFilterWindow 构造后自动折叠轮询已在跑")
         finally:
             win.stop()
+            win.close()
+            win.deleteLater()
+            QApplication.processEvents()
+
+    # ---- 8b. 屏幕滤镜窗口自动折叠：离开收起 / 进入展开 / 手动关闭开关 ----
+    def check_screen_filter_auto_collapse() -> None:
+        from PySide6.QtCore import QPoint
+        from colorPickerPro.screenFilter import ScreenFilterWindow
+        from colorPickerPro.ui.tokens import SIZE
+
+        win = ScreenFilterWindow(fixtures.scheme(1, "自动折叠滤镜"))
+        try:
+            harness.prepare(win)
+            harness.settle(win)
+            assert win.is_collapsed() is False, "屏幕滤镜窗口初始不应折叠"
+            button = win._btn_auto_collapse
+            button.setChecked(True)
+            QApplication.processEvents()
+            win._auto_collapse_timer.stop()   # 手动驱动，避免真实光标干扰
+            win._auto_collapse_step(QPoint(-99999, -99999))
+            QApplication.processEvents()
+            harness.settle(win)
+            assert win.is_collapsed(), "鼠标离开后屏幕滤镜窗口没有折叠"
+            assert win.height() == SIZE.title_bar_height + 2, (
+                f"折叠后应只剩标题栏，实际高度 {win.height()}")
+
+            win._auto_collapse_step(win.geometry().center())
+            QApplication.processEvents()
+            harness.settle(win)
+            assert not win.is_collapsed(), "鼠标进入标题栏后屏幕滤镜窗口没有展开"
+
+            # 手动折叠（双击标题栏）必须同时关闭自动折叠。
+            button.setChecked(True)
+            QApplication.processEvents()
+            win._auto_collapse_timer.stop()
+            win.title_bar.collapseRequested.emit()
+            QApplication.processEvents()
+            assert win.is_collapsed(), "屏幕滤镜窗口手动折叠没有生效"
+            assert win._auto_collapse_enabled is False, (
+                "手动折叠应同时关闭自动折叠")
+            assert win._btn_auto_collapse.isChecked() is False
+        finally:
+            win.stop()
+            win._auto_collapse_timer.stop()
             win.close()
             win.deleteLater()
             QApplication.processEvents()
@@ -970,6 +1016,13 @@ def _run_functional_checks(fixtures: Fixtures,
             harness.prepare(screen)
             harness.settle(screen)
             verify_buttons(screen, "ScreenFilterWindow", True, False)
+            auto = getattr(screen, "_btn_auto_collapse", None)
+            assert auto is not None, "屏幕滤镜窗口缺少自动折叠按钮"
+            assert auto.icon_name() == "collapse", (
+                f"屏幕滤镜自动折叠按钮图标应为 'collapse'，"
+                f"实际 {auto.icon_name()!r}")
+            assert auto.isCheckable(), "屏幕滤镜自动折叠按钮应为可切换状态"
+            assert not auto.icon().isNull(), "屏幕滤镜自动折叠按钮 SVG 图标为空"
             for button, expected_icon in ((screen._btn_pause, "pause"),
                                           (screen._btn_params, "settings")):
                 assert button.icon_name() == expected_icon, (
@@ -1279,6 +1332,7 @@ def _run_functional_checks(fixtures: Fixtures,
     record("dialogs_accept_reject", check_dialogs_accept_reject)
     record("filter_scheme_save", check_filter_scheme_save)
     record("screen_filter_timers", check_screen_filter_timers)
+    record("screen_filter_auto_collapse", check_screen_filter_auto_collapse)
     record("titlebar_buttons", check_titlebar_buttons)
     record("titlebar_close", check_titlebar_close)
     record("titlebar_maximize", check_titlebar_maximize)
@@ -1390,7 +1444,7 @@ def main(argv: list[str] | None = None) -> int:
     emit("      静态检查: setStyleSheet=0、emoji=0、UI 文案无图标字符、"
          "SVG 图标资源齐全、QSS url() 无缺失/无 PNG。")
     emit("      功能冒烟: 模型切换/参数重建/查看器变换/弹窗/标题栏按钮/关闭/最大化/"
-         "自动折叠。")
+         "主窗口与屏幕滤镜自动折叠。")
     if args.only:
         emit(f"筛选: --only {args.only!r}")
     emit("=" * 100)

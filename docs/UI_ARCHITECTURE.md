@@ -19,6 +19,7 @@ colorPickerPro/ui/
     stylesheet.py     由令牌生成全局 QSS（唯一允许写选择器的地方）
     theme.py          apply_theme(app)：Fusion + 调色板 + 字体 + 中文翻译 + 全局 QSS
     icons.py          SVG 图标查找（icon/icon_names/icon_pixmap）
+    app_icon.py       应用图标 QIcon（项目根 pixnex.ico，窗口/任务栏/标题栏共用）
     assets/icons/*.svg 全部界面图标（由 tools/gen_ui_assets.py 生成）
     components/      可复用控件
 ```
@@ -41,7 +42,7 @@ apply_theme(app)                 # 必须在任何窗口创建前
 2. 禁止硬编码颜色/字号；使用 `tokens.qcolor(...)` 或组件。
 3. 禁止字符图标：`✕ ─ ▶ ⏸ ⚙ ↔ ↕ ↻ ＋` 等一律改用 `IconButton("svg名")` / `set_icon("svg名")`；
    新增图标先加 SVG 到 `assets/icons/` 并在 `tools/gen_ui_assets.py` 登记。
-4. 普通内容控件禁止 `setFixedSize/Width/Height`。允许的例外：图标按钮（28×28）、分隔线、标题栏高度、图形取色器高度。
+4. 普通内容控件禁止 `setFixedSize/Width/Height`。允许的例外：图标按钮（28×28）、标题栏应用图标（16×16）、分隔线、标题栏高度、图形取色器高度。
 5. 长文本必须可换行或省略（`SubtitleLabel(word_wrap=True)` / `ElidedLabel`）。
 6. 内容超出高度用 `ScrollArea`，横向工具栏用 `FlowLayout` 自动换行，分栏用 `QSplitter`。
 7. 所有顶层窗口必须 frameless：`FramelessWindowMixin` + `TitleBar`（见 §5），不得回到系统标题栏。
@@ -103,6 +104,14 @@ class MyDialog(ThemedDialog):
 
 主窗口额外约定：标题栏只有「置顶（图钉）/最小化/关闭」，没有最大化；图钉切换
 `WindowStaysOnTopHint`。对话框标题栏只有关闭按钮。
+
+主窗口标题栏最左侧显示应用图标（`init_frameless(..., icon=app_icon())`）：
+- 图标来自 `colorPickerPro/ui/app_icon.py`，实际文件是项目根的 `pixnex.ico`（由
+  `tools/gen_app_icon.py` 生成，16–256 px 多尺寸），同一份文件也用于窗口/任务栏
+  图标和打包后的 EXE 图标；
+- 标题栏里是一个 16×16 的 `QLabel`（`objectName="TitleBarIcon"`）并设置了
+  `WA_TransparentForMouseEvents`，不会抢走标题栏的拖动响应；
+- 只有主窗口传 `icon`，其余窗口标题栏保持纯文字。
 
 用法：
 

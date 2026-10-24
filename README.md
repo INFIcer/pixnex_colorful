@@ -85,7 +85,7 @@
 - **组件库**：`colorPickerPro/ui/components/` 提供标题/说明/状态标签、主次/危险/幽灵/图标按钮、卡片、分隔线、颜色块、滚动区、自动换行 `FlowLayout`、自绘无框对话框/消息框/文件选择器等。复杂控件（取色盘、滑块组、参数编辑器、滤镜方案面板、图像查看器）都由这些基础控件组合而成。
 - **响应式约定**：只用 Qt 布局管理器；窗口缩小时内容用滚动区或 `FlowLayout` 换行，不硬编码控件尺寸；图形取色器随容器宽度自适应缩放并居中；列表/参数分栏用 `QSplitter` 并设置最小宽度。
 - **窗口风格**：主窗口、全部对话框、滤镜方案面板、图像对比窗口与屏幕滤镜窗口都使用同一套自绘标题栏与 1px 方角边框，不显示系统标题栏；四边/四角均可拖动缩放；文件选择、消息框、输入框也使用自绘无框窗口。
-- **图标资源**：所有图标均为 SVG 资产，位于 `colorPickerPro/ui/assets/icons/`，由 `tools/gen_ui_assets.py` 生成，打包时由 `pixnex.spec` 一并收集（含 QtSvg 运行库）。
+- **图标资源**：所有界面图标均为 SVG 资产，位于 `colorPickerPro/ui/assets/icons/`，由 `tools/gen_ui_assets.py` 生成，打包时由 `pixnex.spec` 一并收集（含 QtSvg 运行库）。应用图标（`pixnex.ico`）是另一套多尺寸位图，见下文「应用图标」。
 - **文案**：界面文字保持简短、正式；不使用 emoji、字符图标或口语化长句。
 
 新增或改造界面时，请先阅读 [`docs/UI_ARCHITECTURE.md`](docs/UI_ARCHITECTURE.md)（含组件速查、编码铁律与跨文件 API 约定）。
@@ -113,6 +113,29 @@
 巡检截图输出到 `build/ui-shots/`，报告见 `build/ui-shots/latest_report.txt`。
 
 > 注意：`colorPickerPro/sync/` 内**禁止 `import psutil`**。导入 psutil 会让 UDM Paint 的进程保护永久拒绝本进程的内存访问（重启 UDM 也不会恢复），表现为同步一直停在“连接中…”。需要进程查询时统一使用 `sync/win_process.py` 的原生 Win32 实现。
+
+---
+
+## 应用图标
+
+`pixnex.ico` 是应用身份的唯一来源，同时用于三处：
+
+| 用途 | 位置 |
+|---|---|
+| 主窗口标题栏图标（16×16） | `TitleBar` 左侧，由 `init_frameless(icon=...)` 传入 |
+| 窗口 / 任务栏 / Alt-Tab 图标 | `QApplication.setWindowIcon(app_icon())` |
+| 打包后 `pixnex.exe` 的文件图标 | `pixnex.spec` 中 `EXE(icon='pixnex.ico')` |
+
+图标是**用代码画的**，不要手工改位图：改设计就改 `tools/gen_app_icon.py`（深色圆角底板 + 色相环 + 中心取色块），然后重新生成：
+
+```powershell
+.venv\Scripts\python.exe tools\gen_app_icon.py            # 重新生成 pixnex.ico
+.venv\Scripts\python.exe tools\gen_app_icon.py --preview  # 额外输出 build\icon-preview 预览图
+```
+
+生成脚本一次写入 16/20/24/28/32/40/48/64/128/256 共 10 个尺寸（覆盖 Windows 100%–250% 缩放），
+小尺寸会加粗色环、放大中心色块以保证标题栏和任务栏里可辨认。打包时 `pixnex.spec` 会把同一份
+`pixnex.ico` 既嵌进 EXE 资源、又作为数据文件带进产物，供运行时加载窗口图标。
 
 ---
 

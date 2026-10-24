@@ -633,6 +633,9 @@ QLabel#TitleBarSubtitle {
     font-size: ${font_tiny}px;
     background: transparent;
 }
+QLabel#TitleBarIcon {
+    background: transparent;
+}
 
 /* ============================== content helpers ============================== */
 QFrame#ColorSwatch {

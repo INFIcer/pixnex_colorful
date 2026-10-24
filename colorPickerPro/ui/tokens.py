@@ -55,6 +55,7 @@ class Sizing:
     control_height: int = 26
     button_height: int = 28
     icon_button: int = 24
+    title_bar_icon: int = 16
     title_bar_height: int = 30
     min_window_width: int = 320
     min_window_height: int = 460

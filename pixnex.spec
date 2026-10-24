@@ -47,6 +47,13 @@ if ui_assets_dir.is_dir():
     plugin_datas.append(
         (str(ui_assets_dir), str(Path('colorPickerPro', 'ui', 'assets'))))
 
+# 应用图标：EXE 的图标资源由 EXE(icon=...) 嵌入，但运行时的窗口 / 任务栏
+# 图标还要从磁盘加载（colorPickerPro/ui/app_icon.py 按 __file__ 相对
+# _MEIPASS 查找），所以同一份 .ico 也要作为数据文件打进产物。
+app_icon_file = Path('pixnex.ico')
+if app_icon_file.is_file():
+    plugin_datas.append((str(app_icon_file), '.'))
+
 # theme.apply_theme() 会加载 Qt 自带的简体中文翻译，让系统文件对话框等
 # 标准控件的按钮也显示中文。只收集需要的 .qm。
 qt_translations = pyside6_dir / 'translations'

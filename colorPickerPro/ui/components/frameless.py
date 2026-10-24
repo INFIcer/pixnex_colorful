@@ -20,10 +20,10 @@ building their root layout::
 from __future__ import annotations
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QMouseEvent, QPainter, QPen
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QMouseEvent, QPainter, QPen
 from PySide6.QtWidgets import (
-    QApplication, QHBoxLayout, QSizeGrip, QVBoxLayout, QWidget,
+    QApplication, QHBoxLayout, QLabel, QSizeGrip, QVBoxLayout, QWidget,
 )
 
 from ..tokens import SIZE, SPACE, qcolor
@@ -40,7 +40,8 @@ class TitleBar(QWidget):
     collapseRequested = Signal()
 
     def __init__(self, title: str = "", parent: QWidget | None = None, *,
-                 subtitle: str = "", show_minimize: bool = True,
+                 subtitle: str = "", icon: QIcon | None = None,
+                 show_minimize: bool = True,
                  show_maximize: bool = False, show_close: bool = True,
                  double_click: str | None = "maximize"):
         super().__init__(parent)
@@ -53,6 +54,11 @@ class TitleBar(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(SPACE.md, 0, SPACE.sm, 0)
         layout.setSpacing(SPACE.sm)
+
+        # 应用图标（只有主窗口传 icon，其余窗口标题栏保持纯文字）。
+        self._icon_label: QLabel | None = None
+        self._icon: QIcon | None = None
+        self.set_icon(icon)
 
         self.title_label = ElidedLabel(title, self)
         self.title_label.setObjectName("TitleBarTitle")
@@ -89,6 +95,52 @@ class TitleBar(QWidget):
             layout.addWidget(self._btn_close)
 
     # ------------------------------------------------------------------
+    def set_icon(self, icon: QIcon | None) -> None:
+        """Show *icon* left of the title (no-op for a null icon).
+
+        The icon is a static label, not a button: it must not take clicks away
+        from the drag-to-move area, hence ``WA_TransparentForMouseEvents``.
+        """
+        if icon is None or icon.isNull():
+            return
+        self._icon = icon
+        label = self._icon_label
+        if label is None:
+            label = QLabel(self)
+            label.setObjectName("TitleBarIcon")
+            label.setFixedSize(SIZE.title_bar_icon, SIZE.title_bar_icon)
+            label.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            self.layout().insertWidget(0, label)
+            self._icon_label = label
+        self._refresh_icon_pixmap()
+        label.setVisible(True)
+
+    def _refresh_icon_pixmap(self) -> None:
+        """Re-rasterise the icon for the current screen's device pixel ratio.
+
+        The .ico ships 16/20/24/28/32/40 px frames, so a 150 % or 200 % screen
+        gets a genuinely sharp 24/32 px source instead of an upscaled 16 px one.
+        """
+        label, icon = self._icon_label, self._icon
+        if label is None or icon is None:
+            return
+        ratio = self.devicePixelRatioF() or 1.0
+        pixmap = icon.pixmap(
+            QSize(SIZE.title_bar_icon, SIZE.title_bar_icon), ratio)
+        pixmap.setDevicePixelRatio(ratio)
+        label.setPixmap(pixmap)
+
+    def changeEvent(self, event: QEvent) -> None:  # noqa: N802 (Qt API)
+        if event.type() == QEvent.Type.DevicePixelRatioChange:
+            self._refresh_icon_pixmap()
+        super().changeEvent(event)
+
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        # 窗口第一次显示时才知道最终所在屏幕的缩放比例。
+        self._refresh_icon_pixmap()
+        super().showEvent(event)
+
     def set_title(self, text: str) -> None:
         self.title_label.setText(text)
 
@@ -190,7 +242,8 @@ class FramelessWindowMixin:
     EDGE_MARGIN = 6
 
     def init_frameless(self, title: str = "", *, layout: QVBoxLayout | None = None,
-                       subtitle: str = "", show_minimize: bool = False,
+                       subtitle: str = "", icon: QIcon | None = None,
+                       show_minimize: bool = False,
                        show_maximize: bool = False, show_close: bool = True,
                        resizable: bool = True, double_click: str | None = "maximize",
                        border_color: QColor | str | None = None,
@@ -206,7 +259,7 @@ class FramelessWindowMixin:
         self._raise_on_show = bool(raise_on_show)
 
         self.title_bar = TitleBar(
-            title, self, subtitle=subtitle, show_minimize=show_minimize,
+            title, self, subtitle=subtitle, icon=icon, show_minimize=show_minimize,
             show_maximize=show_maximize, show_close=show_close,
             double_click=double_click)
         self.title_bar.minimizeRequested.connect(self.showMinimized)

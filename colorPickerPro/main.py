@@ -35,6 +35,7 @@ from .screenFilter import ScreenFilterWindow
 from .screenPicker import ScreenPicker
 from .sync.controller import SyncController
 from .ui import apply_theme, configure_application
+from .ui.app_icon import app_icon
 from .ui.components import (
     Card, CaptionLabel, FieldLabel, FramelessWindowMixin, IconButton,
     PrimaryButton, ScrollArea, StatusLabel, hbox,
@@ -52,6 +53,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("pixnex")
+        self.setWindowIcon(app_icon())
         self.setMinimumSize(320, 460)
         self.resize(380, 640)
 
@@ -96,7 +98,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         outer.setContentsMargins(1, 1, 1, 1)
         outer.setSpacing(0)
         self.init_frameless(
-            "pixnex", layout=outer, subtitle="色彩工具",
+            "pixnex", layout=outer, icon=app_icon(),
             show_minimize=True, show_maximize=False, show_close=True,
             resizable=True, double_click=None)
         self._pin_btn = IconButton("pin", tooltip="置顶", checkable=True)
@@ -472,6 +474,8 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("pixnex")
     app.setApplicationDisplayName("pixnex")
+    # 整个应用的窗口图标（任务栏 / Alt-Tab / 未单独设置图标的对话框都继承）。
+    app.setWindowIcon(app_icon())
     apply_theme(app)
     win = MainWindow()
     win.show()

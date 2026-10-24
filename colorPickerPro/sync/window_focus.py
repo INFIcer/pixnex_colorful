@@ -81,23 +81,15 @@ def pick_main_window(windows: "list[WindowInfo] | tuple[WindowInfo, ...]",
 
 
 def pids_for_process_names(names) -> "list[int]":
-    """Running pids whose executable name matches ``names`` (case-insensitive)."""
-    wanted = {str(n).lower() for n in names if n}
-    if not wanted or not IS_WINDOWS:
-        return []
-    try:
-        import psutil
-    except ImportError:  # pragma: no cover - psutil ships with the app
-        return []
+    """Running pids whose executable name matches ``names`` (case-insensitive).
 
-    pids: list[int] = []
-    try:
-        for proc in psutil.process_iter(["pid", "name"]):
-            if (proc.info.get("name") or "").lower() in wanted:
-                pids.append(int(proc.info["pid"]))
-    except Exception:
-        return pids
-    return pids
+    Delegates to :mod:`colorPickerPro.sync.win_process` — the sync subsystem
+    must not import psutil (it breaks UDM Paint memory access), and the native
+    snapshot never opens a handle on the target process.
+    """
+    from .win_process import pids_for_process_names as native_pids
+
+    return native_pids(names)
 
 
 # ---------------------------------------------------------------------------

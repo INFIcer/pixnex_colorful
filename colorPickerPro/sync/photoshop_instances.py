@@ -33,19 +33,18 @@ class PhotoshopInstance:
 
 
 def find_running_photoshop() -> list[tuple[int, str]]:
-    import psutil
+    """``(pid, exe_path)`` of every running ``Photoshop.exe``.
 
-    out: list[tuple[int, str]] = []
+    Uses the native process snapshot: importing psutil anywhere in this process
+    permanently breaks UDM Paint memory access, and switching PS → UDM is a
+    supported workflow.
+    """
+    from .win_process import exe_paths_for_process_names
+
     try:
-        for proc in psutil.process_iter(["pid", "name", "exe"]):
-            try:
-                if proc.info["name"] == PROCESS_NAME and proc.info.get("exe"):
-                    out.append((proc.info["pid"], proc.info["exe"]))
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+        return exe_paths_for_process_names([PROCESS_NAME])
     except Exception:
-        pass
-    return out
+        return []
 
 
 def find_registered_progids() -> list[tuple[str, str]]:
@@ -102,13 +101,14 @@ def detect_instances() -> list[PhotoshopInstance]:
                 instances.append(PhotoshopInstance(
                     kind=COM_KIND, label=_instance_label(exe, COM_KIND),
                     exe_path=exe, pid=pid, progid=match[0],
-            ))
-        else:
-            instances.append(PhotoshopInstance(
-                kind=SCRIPT_BRIDGE_KIND,
-                label=_instance_label(exe, SCRIPT_BRIDGE_KIND),
-                exe_path=exe, pid=pid,
-            ))
+                ))
+            else:
+                # 没有注册 COM 的（绿色/便携版）只能走脚本桥。
+                instances.append(PhotoshopInstance(
+                    kind=SCRIPT_BRIDGE_KIND,
+                    label=_instance_label(exe, SCRIPT_BRIDGE_KIND),
+                    exe_path=exe, pid=pid,
+                ))
     except Exception:
         return []
     return instances

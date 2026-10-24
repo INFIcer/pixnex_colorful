@@ -22,8 +22,6 @@ import sys
 import time
 from typing import Any, Optional, cast
 
-import psutil
-
 try:
     import pythoncom
     import win32com.client as _w32
@@ -42,6 +40,7 @@ from .photoshop_script_bridge import (
     PANEL_VERSION,
     PhotoshopScriptBridge,
 )
+from .win_process import is_pid_running
 
 PROCESS_NAME = "Photoshop.exe"
 
@@ -76,6 +75,32 @@ def clamp8(v: int) -> int:
     return max(0, min(255, int(v)))
 
 
+# -- COM apartment helpers ---------------------------------------------------
+# pywin32 must be initialised *per thread*: SyncController talks to Photoshop
+# from its worker QThread, and without CoInitialize every Dispatch call fails
+# with CO_E_NOTINITIALIZED (0x800401F0) — which silently degraded sync to the
+# CEP script bridge and made the status read 「已同步」 while nothing synced.
+def com_initialize() -> bool:
+    """Initialise COM for the calling thread; True when it is usable now."""
+    if pythoncom is None:
+        return False
+    try:
+        pythoncom.CoInitialize()
+        return True
+    except Exception:
+        return False
+
+
+def com_uninitialize() -> None:
+    """Balance :func:`com_initialize` for the calling thread."""
+    if pythoncom is None:
+        return
+    try:
+        pythoncom.CoUninitialize()
+    except Exception:
+        pass
+
+
 class PhotoshopSync:
     """Colour bridge to Adobe Photoshop (COM or green-edition script bridge).
 
@@ -102,8 +127,13 @@ class PhotoshopSync:
         self._instances: list[PhotoshopInstance] = []
         self._detect_ts: float = 0.0
         self._com_failed = False
+        self._com_failed_ts: float = 0.0
+        self._connect_ts: float = 0.0
         self.last_error: str = ""
         self.permission_issue: bool = False
+
+    #: 一次 COM 失败后，隔多久再试（避免绿色版每 0.1 秒重试一次 Dispatch）
+    COM_RETRY_SECONDS = 10.0
 
     # -- instance discovery -------------------------------------------------
     def _detect(self, force: bool = False) -> list[PhotoshopInstance]:
@@ -118,6 +148,14 @@ class PhotoshopSync:
 
     # -- connect -------------------------------------------------------------
     def connect(self) -> bool:
+        # 完全没连上时最多每秒尝试一次：Dispatch / 进程枚举都很贵，轮询循环
+        # 每 100ms 调一次 connect 会把 Photoshop 拖卡。
+        now = time.monotonic()
+        if (self._app is None and self._disp is None and self._bridge is None
+                and now - self._connect_ts < 1.0):
+            return False
+        self._connect_ts = now
+
         if self._app is not None and self._disp is not None:
             if not self._is_process_alive():
                 self.last_error = "Photoshop 进程已退出，请重新启动 Photoshop 后再试"
@@ -130,15 +168,14 @@ class PhotoshopSync:
                 except Exception:
                     self._reset()
 
+        # 已部署的脚本桥只有真的在写心跳才算连上：deploy() 成功只代表文件
+        # 写进去了，Photoshop 没重启时面板并没有运行（旧代码在这里误报已同步）。
         if (self._bridge is not None and self._bridge.is_deployed()
-                and self._is_process_alive()):
+                and self._bridge.is_alive() and self._is_process_alive()):
+            self.last_error = ""
             return True
 
         self._reset()
-
-        if _w32 is None and self.backend != SCRIPT_BRIDGE_KIND:
-            self.last_error = "pywin32 组件不可用（打包异常或未安装 pywin32）"
-            return False
 
         instances = self._detect()
         target = pick_target(instances, self.current_version)
@@ -147,10 +184,12 @@ class PhotoshopSync:
             return False
 
         self._pid = target.pid
+        self._maybe_retry_com()
         if target.kind == COM_KIND and not self._com_failed:
             if self._connect_com(target):
                 return True
             self._com_failed = True
+            self._com_failed_ts = time.monotonic()
             if self.current_version in ("", "auto"):
                 for inst in instances:
                     if inst is not target and inst.kind == COM_KIND:
@@ -160,6 +199,12 @@ class PhotoshopSync:
                             return True
             self._pid = target.pid
         return self._connect_bridge(target)
+
+    def _maybe_retry_com(self) -> None:
+        """Allow COM again after a cooldown (green editions stay on the bridge)."""
+        if (self._com_failed
+                and time.monotonic() - self._com_failed_ts >= self.COM_RETRY_SECONDS):
+            self._com_failed = False
 
     def _connect_com(self, target: PhotoshopInstance) -> bool:
         if _w32 is None:
@@ -197,15 +242,20 @@ class PhotoshopSync:
     def _connect_bridge(self, target: PhotoshopInstance) -> bool:
         ps_dir = os.path.dirname(target.exe_path)
         self._bridge = PhotoshopScriptBridge(ps_dir)
-        if not self._bridge.deploy():
+        already_deployed = self._bridge.is_deployed()
+        if not already_deployed and not self._bridge.deploy():
             self.last_error = "脚本桥部署失败（目录不可写？请以管理员身份运行）"
             return False
         self.backend = SCRIPT_BRIDGE_KIND
         if self._bridge.is_alive():
             self.last_error = ""
             return True
-        self.last_error = "脚本桥已部署：重启 Photoshop（绿色版）后生效"
-        return True
+        # 部署成功 ≠ 生效：CEP 面板只有在 Photoshop 重启后才会跑起来。
+        self.last_error = (
+            "脚本桥已部署，但 Photoshop 里没有响应：请重启 Photoshop 后生效"
+            if not already_deployed
+            else "脚本桥没有心跳：请重启 Photoshop（绿色版）后重试")
+        return False
 
     # -- colour I/O ----------------------------------------------------------
     def _invoke_js(self, script: str) -> object:
@@ -232,73 +282,77 @@ class PhotoshopSync:
         if not self._proc_handle:
             self._proc_handle = self.K32.OpenProcess(0x00100000, False, self._pid)
             if not self._proc_handle:
-                try:
-                    return any(
-                        p.info["pid"] == self._pid
-                        for p in psutil.process_iter(["pid"])
-                    )
-                except Exception:
-                    return False
+                # 原生进程快照兜底（禁止 psutil：会破坏 UDM 的内存访问）。
+                return is_pid_running(self._pid)
         return self.K32.WaitForSingleObject(self._proc_handle, 0) != 0
 
     # -- slot readers ---------------------------------------------------------------
-    def get_color(self) -> dict[str, int] | None:
-        if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
-            state = self._bridge.read_state()
-            if state is not None:
-                fg = state["fg"]
-                return {"r": fg["r"], "g": fg["g"], "b": fg["b"], "index": 0}
-            return None
-        if self._app is None:
-            if not self.connect():
-                return None
-        assert self._app is not None
+    #: index 0 = foreground, 1 = background (ExtendScript property names)
+    _SLOT_PROPS = ("foregroundColor", "backgroundColor")
 
+    def _bridge_state(self, key: str, index: int) -> dict[str, int] | None:
+        if self._bridge is None:
+            return None
+        state = self._bridge.read_state()
+        if state is None:
+            return None
+        slot = state[key]
+        return {"r": slot["r"], "g": slot["g"], "b": slot["b"], "index": index}
+
+    def _read_slot_js(self, index: int) -> dict[str, int]:
+        """Read a colour slot through ``DoJavaScript``.
+
+        The COM property path is deliberately avoided: on Photoshop CC 2018
+        ``app.ForegroundColor`` hands out a per-client copy — mutating its RGB
+        is silently ignored and reading it can keep returning a stale snapshot
+        while Photoshop displays a different colour.  ``DoJavaScript`` runs in
+        Photoshop itself, so it is the ground truth for both directions.
+        """
+        prop = self._SLOT_PROPS[index]
+        result = self._invoke_js(
+            f"var c=app.{prop}.rgb;"
+            "Math.round(c.red)+'|'+Math.round(c.green)+'|'+Math.round(c.blue)")
+        parts = str(result).split("|")
+        if len(parts) != 3:
+            raise ValueError(f"unexpected DoJavaScript result: {result!r}")
+        return {"r": clamp8(float(parts[0])), "g": clamp8(float(parts[1])),
+                "b": clamp8(float(parts[2])), "index": index}
+
+    def _write_slot_js(self, index: int, r: int, g: int, b: int) -> None:
+        prop = self._SLOT_PROPS[index]
+        self._invoke_js(
+            "var c=new SolidColor();"
+            f"c.rgb.red={int(r)};c.rgb.green={int(g)};c.rgb.blue={int(b)};"
+            f"app.{prop}=c;")
+
+    def _get_slot(self, index: int) -> dict[str, int] | None:
+        if self.backend == SCRIPT_BRIDGE_KIND:
+            return self._bridge_state("fg" if index == 0 else "bg", index)
+        if self._app is None:
+            self.connect()
+        # connect() 可能把 backend 切到脚本桥（绿色版），需要重新分派。
+        if self.backend == SCRIPT_BRIDGE_KIND:
+            return self._bridge_state("fg" if index == 0 else "bg", index)
+        if self._app is None:
+            return None
         if not self._is_process_alive():
             self._reset()
             return None
-
         try:
-            rgb = self._app.ForegroundColor.RGB
-            r = clamp8(round(float(rgb.Red)))
-            g = clamp8(round(float(rgb.Green)))
-            b = clamp8(round(float(rgb.Blue)))
-            return {"r": r, "g": g, "b": b, "index": 0}
+            return self._read_slot_js(index)
         except Exception as exc:
             if _com_hresult(exc) in _PERMISSION_HRESULTS:
                 self.permission_issue = True
-            self.last_error = f"读取 Photoshop 前景色失败：{exc}"
+            name = "前景色" if index == 0 else "背景色"
+            self.last_error = f"读取 Photoshop {name}失败：{exc}"
             self._reset()
             return None
+
+    def get_color(self) -> dict[str, int] | None:
+        return self._get_slot(0)
 
     def get_bg_color(self) -> dict[str, int] | None:
-        if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
-            state = self._bridge.read_state()
-            if state is not None:
-                bg = state["bg"]
-                return {"r": bg["r"], "g": bg["g"], "b": bg["b"], "index": 1}
-            return None
-        if self._app is None:
-            if not self.connect():
-                return None
-        assert self._app is not None
-
-        if not self._is_process_alive():
-            self._reset()
-            return None
-
-        try:
-            rgb = self._app.BackgroundColor.RGB
-            r = clamp8(round(float(rgb.Red)))
-            g = clamp8(round(float(rgb.Green)))
-            b = clamp8(round(float(rgb.Blue)))
-            return {"r": r, "g": g, "b": b, "index": 1}
-        except Exception as exc:
-            if _com_hresult(exc) in _PERMISSION_HRESULTS:
-                self.permission_issue = True
-            self.last_error = f"读取 Photoshop 背景色失败：{exc}"
-            self._reset()
-            return None
+        return self._get_slot(1)
 
     # -- slot writers ---------------------------------------------------------------
     def swap_slots(self) -> bool:
@@ -327,33 +381,32 @@ class PhotoshopSync:
 
     def set_color(self, r: int, g: int, b: int, color_index: int = 0) -> bool:
         r, g, b = clamp8(r), clamp8(g), clamp8(b)
+        color_index = 1 if color_index else 0
 
-        if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
-            return self._bridge.send_color(
-                str(time.time_ns()), color_index, r, g, b)
-
-        if self._app is None:
-            if not self.connect():
+        if self.backend == SCRIPT_BRIDGE_KIND:
+            if self._bridge is None:
                 return False
-        if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
             return self._bridge.send_color(
                 str(time.time_ns()), color_index, r, g, b)
-        assert self._app is not None
+
+        if self._app is None and not self.connect():
+            return False
+        if self.backend == SCRIPT_BRIDGE_KIND:
+            if self._bridge is None:
+                return False
+            return self._bridge.send_color(
+                str(time.time_ns()), color_index, r, g, b)
 
         if not self._is_process_alive():
             self._reset()
             return False
 
         try:
-            cur = self.get_color() if color_index == 0 else self.get_bg_color()
-            if cur and cur["r"] == r and cur["g"] == g and cur["b"] == b:
-                return True  # no-op
-            slot = (self._app.ForegroundColor if color_index == 0
-                    else self._app.BackgroundColor)
-            rgb = slot.RGB
-            rgb.Red = r
-            rgb.Green = g
-            rgb.Blue = b
+            current = self._read_slot_js(color_index)
+            if (current["r"], current["g"], current["b"]) == (r, g, b):
+                return True  # 已经是这个颜色，不做无谓写入
+            self._write_slot_js(color_index, r, g, b)
+            self.last_error = ""
             return True
         except Exception as exc:
             if _com_hresult(exc) in _PERMISSION_HRESULTS:
@@ -372,59 +425,50 @@ class PhotoshopSync:
         """Executable that may host the Photoshop window."""
         return (PROCESS_NAME,)
 
-    def status(self) -> dict[str, object]:
-        if self.backend == SCRIPT_BRIDGE_KIND and self._bridge is not None:
-            connected = (self._bridge.is_deployed()
-                         and self._is_process_alive())
-            if not connected:
-                self.connect()
-                connected = (self._bridge is not None
-                             and self._bridge.is_deployed()
-                             and self._is_process_alive())
-            return {
-                "connected": connected,
-                "pid": self._pid if connected else None,
-                "version": self.current_version,
-                "processName": self.process_name,
-                "backend": self.backend,
-                "bridgeAlive": bool(self._bridge is not None
-                                    and self._bridge.is_alive()),
-                "panelStale": bool(self._bridge is not None
-                                   and self._bridge.panel_version()
-                                   != PANEL_VERSION),
-                "lastError": self.last_error,
-            }
+    def _bridge_connected(self) -> bool:
+        """Deployed **and** heartbeating — deploying alone does not sync."""
+        return bool(self._bridge is not None
+                    and self._bridge.is_deployed()
+                    and self._bridge.is_alive()
+                    and self._is_process_alive())
 
-        connected = (self._disp is not None
-                     or (self._bridge is not None and self._bridge.is_alive()))
+    def _com_connected(self) -> bool:
+        return self._disp is not None and self._is_process_alive()
+
+    def _connected(self) -> bool:
+        return self._com_connected() or self._bridge_connected()
+
+    def status(self) -> dict[str, object]:
+        connected = self._connected()
         if not connected:
             self.connect()
-            connected = (self._disp is not None
-                         or (self._bridge is not None and self._bridge.is_alive()))
+            connected = self._connected()
 
+        bridge = self._bridge
         return {
             "connected": connected,
+            "running": connected or bool(self._detect()),
             "pid": self._pid if connected else None,
             "version": self.current_version,
             "processName": self.process_name,
             "backend": self.backend,
-            "bridgeAlive": bool(self._bridge is not None
-                                and self._bridge.is_alive()),
+            "bridgeAlive": bool(bridge is not None and bridge.is_alive()),
+            "panelStale": bool(bridge is not None
+                               and bridge.panel_version() != PANEL_VERSION),
             "lastError": self.last_error,
         }
 
     def status_lite(self) -> dict[str, object]:
-        bridge_ok = (self._bridge is not None
-                     and self._bridge.is_deployed()
-                     and self._is_process_alive())
+        connected = self._connected()
+        bridge = self._bridge
         return {
-            "connected": bridge_ok or self._disp is not None,
-            "pid": self._pid if bridge_ok or self._disp is not None else None,
+            "connected": connected,
+            "running": connected or bool(self._detect()),
+            "pid": self._pid if connected else None,
             "version": self.current_version,
             "processName": self.process_name,
             "backend": self.backend,
-            "bridgeAlive": bool(self._bridge is not None
-                                and self._bridge.is_alive()),
+            "bridgeAlive": bool(bridge is not None and bridge.is_alive()),
             "lastError": self.last_error,
         }
 

@@ -22,6 +22,7 @@ import math
 import os
 import struct
 import sys
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -43,6 +44,7 @@ from .brush_color_spaces import (
     resolve_active_rgb,
     rgb_to_space_values,
 )
+from .win_process import is_process_running
 
 SECTION_NAME = "UDMPaint"
 DEFAULT_VERSION_KEY = "udm4.0"
@@ -132,6 +134,8 @@ class UDMSync:
         self._last_hsv_s: float = 0.0
         self._resolve_fail_count: int = 0
         self._RESOLVE_FAIL_LIMIT = 30
+        self._running: bool | None = None
+        self._running_ts: float = 0.0
 
         self.use_abs: bool = False
         self.abs_r: int = 0
@@ -222,6 +226,31 @@ class UDMSync:
         self.target = None
         self._resolve_fail_count = 0
 
+    def _process_running(self) -> bool | None:
+        """Whether ``UDMPaintPRO.exe`` / ``UDMPaintEX.exe`` is running.
+
+        Cached for one second: the controller polls at 10 Hz and a process
+        snapshot per tick is pointless.  ``None`` means the process list could
+        not be read, in which case callers must not claim 「未启动」.
+        """
+        now = time.monotonic()
+        if now - self._running_ts >= 1.0:
+            self._running = is_process_running(_PROCESS_NAMES)
+            self._running_ts = now
+        return self._running
+
+    def _ensure_attached(self) -> bool:
+        """Attach on demand, but never try while UDM is not running.
+
+        Opening ``Pymem`` against a missing process ten times per second is
+        wasted work and produced the misleading perpetual 「连接中」 status.
+        """
+        if self.pm is not None:
+            return True
+        if self._process_running() is False:
+            return False
+        return self.connect()
+
     # ----- memory accessors ----------------------------------------------
     def _read_u32(self, address: int) -> int:
         assert self.pm is not None
@@ -299,7 +328,7 @@ class UDMSync:
 
     # ----- public color access -------------------------------------------
     def get_color(self) -> dict[str, int] | None:
-        if self.pm is None and not self.connect():
+        if not self._ensure_attached():
             return None
 
         space_addrs = self._resolve_space_addresses()
@@ -323,7 +352,7 @@ class UDMSync:
         return rgb
 
     def set_color(self, r: int, g: int, b: int) -> bool:
-        if self.pm is None and not self.connect():
+        if not self._ensure_attached():
             return False
 
         space_addrs = self._resolve_space_addresses()
@@ -365,7 +394,11 @@ class UDMSync:
         return _PROCESS_NAMES
 
     def status(self) -> dict[str, object]:
-        if self.pm is None:
+        running = self._process_running()
+        if running is False and self.pm is not None:
+            # 目标软件已经退出：立刻断掉旧句柄，别继续读一个死进程的地址。
+            self._drop_connection()
+        if self.pm is None and running is not False:
             self.connect()
         space_addrs = self._resolve_space_addresses() if self.pm is not None else None
         connected = (
@@ -373,11 +406,21 @@ class UDMSync:
             and self.target is not None
             and space_addrs is not None
         )
+        if connected:
+            last_error = ""
+        elif running is False:
+            last_error = "未检测到 UDM Paint 进程，请先启动 UDM Paint 再开启同步"
+        elif running is None:
+            last_error = "无法确认 UDM Paint 是否在运行（进程列表不可用）"
+        else:
+            last_error = "已找到 UDM Paint，但颜色数据尚未连通（请检查版本或管理员权限）"
         return {
             "connected": bool(connected),
+            "running": True if connected else running,
             "pid": self.pid if connected else None,
             "baseOffset": f"0x{self.base_offset:X}",
             "target": f"0x{self.target:X}" if connected and self.target is not None else None,
             "version": self.current_version,
             "processName": self.process_name,
+            "lastError": last_error,
         }

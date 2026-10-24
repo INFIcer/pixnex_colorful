@@ -97,11 +97,17 @@ class StatusLabel(RoleLabel):
         self._state = state
         set_state(self, state)
 
-    def set_message(self, text: str, state: str | None = None) -> None:
+    def set_message(self, text: str, state: str | None = None,
+                    detail: str | None = None) -> None:
+        """Set the pill text; *detail* (if given) becomes the tooltip.
+
+        Long explanations must not widen the pill, so callers pass a short
+        label here and the full sentence as *detail*.
+        """
         if state is not None:
             self.set_state(state)
         self.setText(text)
-        self.setToolTip(text)
+        self.setToolTip(detail or text)
 
 
 class ElidedLabel(QLabel):

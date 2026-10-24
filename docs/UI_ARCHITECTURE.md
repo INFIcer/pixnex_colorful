@@ -62,7 +62,7 @@ apply_theme(app)                 # 必须在任何窗口创建前
 | `TitleLabel` / `DisplayLabel` | 页面内标题（窗口标题在 TitleBar 里） |
 | `SubtitleLabel` / `CaptionLabel` / `HintLabel` | 说明文字（可换行） |
 | `SectionTitle` / `FieldLabel` / `ValueLabel` / `MonoLabel` | 小节标题 / 表单标签 / 数值 / 等宽数值 |
-| `StatusLabel` | 状态文字：`set_message(text, State.SUCCESS)` |
+| `StatusLabel` | 状态文字：`set_message(text, State.SUCCESS)`；长解释用 `set_message(短标签, state, detail=长说明)`（detail 进 tooltip，不撑宽标签） |
 | `ElidedLabel` | 单行、自动省略号 |
 | `PrimaryButton` / `SecondaryButton` | 主操作 / 次要操作 |
 | `DangerButton` / `GhostButton` | 危险操作 / 轻量操作 |

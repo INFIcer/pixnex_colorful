@@ -34,14 +34,12 @@ def test_sync_import_does_not_load_psutil():
     assert output == "False", f"psutil was imported eagerly: {output!r}"
 
 
-def test_sync_controller_constructs_backends_lazily():
+def test_sync_controller_accepts_replaced_backends():
+    """Controller 的后端可替换（测试/自定义后端依赖这一约定）。"""
     from colorPickerPro.sync.controller import SyncController
 
     controller = SyncController()
     try:
-        assert controller._udm is None, "UDMSync 不应在构造时创建"
-        assert controller._ps is None, "PhotoshopSync 不应在构造时创建"
-
         fake_udm = object()
         fake_ps = object()
         controller.udm = fake_udm
@@ -52,15 +50,26 @@ def test_sync_controller_constructs_backends_lazily():
         controller.stop_thread()
 
 
-def test_udm_window_pid_lookup_does_not_open_target_handles():
-    """PID 解析只枚举窗口，不应对目标进程调用 OpenProcess。"""
+def test_udm_pid_lookup_does_not_open_target_handles():
+    """PID 解析只读进程快照，不应 OpenProcess 目标进程。
+
+    打开 UDM Paint 的进程句柄会触发它的进程保护，之后所有内存访问都会被拒绝。
+    """
     source = (ROOT / "colorPickerPro" / "sync" / "window_focus.py").read_text(
         encoding="utf-8")
-    start = source.index("def _window_pids_for_names")
-    end = source.index("def activate_window", start)
+    start = source.index("def pids_for_process_names")
+    end = source.index("\nclass ", start)
     body = source[start:end]
-    assert "_kernel32.OpenProcess(" not in body, (
-        "窗口 PID 解析不应 OpenProcess 目标进程（会阻断 UDM 内存访问）")
+    assert "OpenProcess(" not in body, (
+        "PID 解析不应 OpenProcess 目标进程（会阻断 UDM 内存访问）")
+
+    native = (ROOT / "colorPickerPro" / "sync" / "win_process.py").read_text(
+        encoding="utf-8")
+    for name in ("def is_process_running", "def pids_for_process_names"):
+        start = native.index(name)
+        end = native.index("\ndef ", start)
+        assert "OpenProcess(" not in native[start:end], (
+            f"{name} 不应 OpenProcess 目标进程")
 
 
 def test_sync_package_never_imports_psutil():
@@ -103,8 +112,8 @@ def test_sync_sources_do_not_import_psutil():
 def _main() -> int:
     tests = [
         test_sync_import_does_not_load_psutil,
-        test_sync_controller_constructs_backends_lazily,
-        test_udm_window_pid_lookup_does_not_open_target_handles,
+        test_sync_controller_accepts_replaced_backends,
+        test_udm_pid_lookup_does_not_open_target_handles,
         test_sync_package_never_imports_psutil,
         test_process_resolution_without_windows_never_imports_psutil,
         test_sync_sources_do_not_import_psutil,

@@ -53,10 +53,25 @@
 - 在数值输入框里键入时不会打断，回车或点到别处后归还
 - 取消勾选即可关闭该行为
 
+卡片右上角的状态文字会说明当前同步处于哪一步：
+
+| 状态 | 含义 |
+|---|---|
+| 未同步 | 未开启同步，或目标软件选了「关闭」 |
+| 连接中… | 刚点击「开启同步」，第一次轮询还没结果（约 0.1 秒） |
+| 已同步 | 已连上目标软件，颜色双向同步中 |
+| 未启动 | **目标绘画软件还没启动**；把鼠标停在状态文字上会提示该启动哪个程序 |
+| 未连接 | 软件已经在运行，但颜色数据读不到（版本不匹配、权限级别不同等） |
+| 写入失败 | 读到了颜色，但把颜色推给软件时出错；tooltip 里是具体报错 |
+
+> 「未启动」只是提示，不是错误：先打开 UDM Paint / Photoshop，状态会在约 1 秒内自动变成「已同步」，不需要重新点「开启同步」。
+
 > ⚠️ **兼容性说明**
 > - **UDM Paint**：可正常使用（内存同步；已适配其进程保护机制，需与 pixnex 使用相同权限级别运行）。
-> - **Photoshop（PS）**：版本存在问题，当前不可用（绿色版需部署脚本桥并重启 PS 后生效，注册版 COM 依赖权限一致，存在稳定性问题）。
+> - **Photoshop（PS）**：已按 COM + ExtendScript 适配（CC 2018 实测双向同步）。颜色读写一律通过 `DoJavaScript` 在 Photoshop 内部执行——CC 2018 的 COM 属性 `app.ForegroundColor` 返回的是本地副本，直接改 `rgb.Red` 不会真正改到 Photoshop，读到的也可能是旧快照（这就是之前「显示已同步但读写都没同步」的原因）。首次连接若弹出「是否允许运行脚本」，允许即可。
+> - **Photoshop 绿色版**：走 CEP 脚本桥（隐藏面板）。部署后需要重启 Photoshop 才会加载；面板没有心跳时状态会显示「未连接」并提示重启，不会假装已同步。
 > - **其他软件**：暂未适配。
+> - **进程检测**：同步子系统一律使用 `colorPickerPro/sync/win_process.py` 的原生进程快照，**不得 import psutil**（导入会让 UDM Paint 的进程保护永久拒绝 pixnex 的内存访问）。
 
 ---
 
@@ -103,8 +118,11 @@
 .venv\Scripts\python.exe tests\ui_layout_check.py
 .venv\Scripts\python.exe tests\ui_layout_check.py --dpi-pass 1.5
 
-# 颜色同步回归（同步子系统不得 import psutil / 懒加载 / 窗口 PID 解析约束）
+# 颜色同步回归（同步子系统不得 import psutil / 窗口 PID 解析不碰目标进程）
 .venv\Scripts\python.exe tests\test_sync_udm_regression.py
+
+# 同步状态文案（未启动 / 未连接 / 已同步；重新开启后必须再次推送）
+.venv\Scripts\python.exe tests\test_sync_status.py
 
 # UDM 颜色槽地址解析（锚点指针变化后必须跟随新地址）
 .venv\Scripts\python.exe tests\test_sync_udm_address.py
@@ -202,6 +220,9 @@ build.bat                     # 一键打包，产物 dist\pixnex.exe（单文�
 
 **色彩模型切换后颜色变了？**
 不同色彩模型的取值范围不同，切换后颜色值会自动转换，视觉上应保持一致。
+
+**同步状态显示「未连接 / 写入失败」怎么办？**
+把鼠标停在状态文字上看 tooltip：它会说明是「没启动」「没有打开的文档」「脚本桥没有心跳」还是具体的 COM 报错。Photoshop 走 COM 时两个程序要以相同权限级别运行（都普通启动，或都以管理员启动）。
 
 **如何重置图像查看器到初始状态？**
 点击「适应」按钮恢复默认缩放，或使用「复位」按钮重置旋转。

@@ -33,7 +33,10 @@ from .image_drop_widget import ImageDropWidget
 from .image_filter_compare import ImageFilterCompareWindow
 from .screenFilter import ScreenFilterWindow
 from .screenPicker import ScreenPicker
-from .sync.controller import SyncController
+from .sync.controller import (
+    STATUS_CONNECTING, STATUS_DISCONNECTED, STATUS_IDLE, STATUS_NOT_RUNNING,
+    STATUS_SYNCED, STATUS_WRITE_FAILED, SyncController,
+)
 from .ui import apply_theme, configure_application
 from .ui.app_icon import app_icon
 from .ui.components import (
@@ -47,6 +50,16 @@ from .ui.tokens import SPACE, State, Variant
 _TEXT_EDIT_WIDGETS = (
     QAbstractSpinBox, QLineEdit, QTextEdit, QPlainTextEdit,
 )
+
+# 状态标签文案 → 语义颜色。「未启动」是提示而不是错误，用 warning 色；
+# 「写入失败」说明连接在但推不过去，按错误处理。
+_SYNC_STATUS_STATES = {
+    STATUS_SYNCED: State.SUCCESS,
+    STATUS_IDLE: State.NEUTRAL,
+    STATUS_NOT_RUNNING: State.WARNING,
+    STATUS_DISCONNECTED: State.DANGER,
+    STATUS_WRITE_FAILED: State.DANGER,
+}
 
 
 class MainWindow(FramelessWindowMixin, QMainWindow):
@@ -165,7 +178,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
 
     def _build_sync_card(self) -> Card:
         card = Card("颜色同步")
-        self._sync_status = StatusLabel("未同步", State.NEUTRAL)
+        self._sync_status = StatusLabel(STATUS_IDLE, State.NEUTRAL)
         # 同步状态可能是一句较长的错误信息：限制宽度避免把标题行撑开，
         # 完整内容放在 tooltip 里（StatusLabel.set_message 会自动设置）。
         self._sync_status.setMaximumWidth(220)
@@ -337,7 +350,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             self._sync_pending_off()
             self._sync.set_enabled(False)
             self._update_sync_button()
-            self._sync_status.set_message("未同步", State.NEUTRAL)
+            self._sync_status.set_message(STATUS_IDLE, State.NEUTRAL)
 
     def _on_sync_toggle(self):
         self._sync_enabled = not self._sync_enabled
@@ -346,9 +359,11 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         if self._sync_enabled:
             self._last_pushed_rgb = None   # 开启后第一次选色一定归还
             self._push_sync_color()
-            self._sync_status.set_message("连接中…", State.ACCENT)
+            # 只是短暂过渡：第一次轮询就会给出「已同步 / 未启动 / 未连接」。
+            self._sync_status.set_message(STATUS_CONNECTING, State.ACCENT)
         else:
             self._sync_pending_off()
+            self._sync_status.set_message(STATUS_IDLE, State.NEUTRAL)
 
     def _update_sync_button(self):
         self._sync_btn.setText("关闭同步" if self._sync_enabled else "开启同步")
@@ -450,20 +465,21 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
     def _on_sync_status(self, mode, connected):
         if mode != self._sync_mode:
             return
-        if self._sync_mode == "off":
-            # 同步关闭时控制器也会报告 connected=False，这里不能显示成
+        if self._sync_mode == "off" or not self._sync_enabled:
+            # 同步关闭/未开启时控制器也会报告 connected=False，这里不能显示成
             # 红色「未连接」，否则看起来像是出错了。
-            self._sync_status.set_message("未同步", State.NEUTRAL)
+            self._sync_status.set_message(STATUS_IDLE, State.NEUTRAL)
             return
         if connected:
-            self._sync_status.set_message("已同步", State.SUCCESS)
+            self._sync_status.set_message(STATUS_SYNCED, State.SUCCESS)
         else:
-            self._sync_status.set_message("未连接", State.DANGER)
+            self._sync_status.set_message(STATUS_DISCONNECTED, State.DANGER)
 
-    def _on_sync_message(self, message):
-        if self._sync_mode == "off" or not message:
+    def _on_sync_message(self, text, detail=""):
+        if self._sync_mode == "off" or not self._sync_enabled or not text:
             return
-        self._sync_status.set_message(message, State.WARNING)
+        state = _SYNC_STATUS_STATES.get(text, State.WARNING)
+        self._sync_status.set_message(text, state, detail)
 
 
 def main():

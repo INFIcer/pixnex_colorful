@@ -461,6 +461,18 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         self._mouse_down = False
         self._try_return_focus()
 
+    def _on_filter_color_picked(self, r, g, b):
+        """屏幕滤镜窗口图像区域左键取色：同步为当前颜色。
+
+        点击发生在滤镜窗口里，松键事件会正常派发到应用事件过滤器，因此不需要
+        手动复位 ``_mouse_down``；颜色变化经模型监听器触发颜色同步与焦点归还。
+        """
+        self._model.set_from_srgb(r / 255.0, g / 255.0, b / 255.0)
+
+    def _format_picked_color(self, r, g, b) -> str:
+        """取色提示文案：当前颜色模型的样式，如 ``L-0.61 C-0.25 H-321.7``。"""
+        return self._model.format_srgb(r / 255.0, g / 255.0, b / 255.0)
+
     def _on_pick_cancelled(self):
         # 取色器覆盖层同样在 mousePressEvent 里隐藏自己，右键 / Esc 取消时
         # 松键事件不会回到本进程；这里清掉"鼠标按下"状态，避免状态机卡住。
@@ -481,6 +493,10 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
 
     def _create_screen_filter(self, scheme):
         win = ScreenFilterWindow(scheme)
+        # 屏幕滤镜窗口的「图像区域左键取色」直接同步到当前颜色；
+        # 提示文案按主窗口「当前颜色模型」格式化（切换模型后立即生效）。
+        win.set_color_formatter(self._format_picked_color)
+        win.colorPicked.connect(self._on_filter_color_picked)
         offset = 30 * (len(self._filter_windows) % 8)
         win.move(100 + offset, 100 + offset)
         win.start()

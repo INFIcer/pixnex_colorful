@@ -119,6 +119,21 @@ class BaseColorModel(ABC):
                 float(np.clip(srgb[1], 0, 1)),
                 float(np.clip(srgb[2], 0, 1)))
 
+    def format_srgb(self, r: float, g: float, b: float) -> str:
+        """把 sRGB (0-1) 格式化成当前模型样式的文本，如 ``L-0.61 C-0.25 H-321.7``。
+
+        只做数值换算，不修改模型自身参数、也不触发监听器（供屏幕滤镜窗口的
+        取色提示等「只读展示」场景使用）。参数精度与滑块输入框保持一致。
+        """
+        params = np.asarray(
+            self._srgb_to_params(r, g, b), dtype=float).reshape(-1)
+        parts = []
+        for name, value, decimals in zip(
+                self.param_names, params, self.param_decimals):
+            number = float(value) if np.isfinite(value) else 0.0
+            parts.append(f"{name}-{number:.{int(decimals)}f}")
+        return " ".join(parts)
+
     def set_from_srgb(self, r, g, b):
         r = round(r * 255) / 255.0
         g = round(g * 255) / 255.0

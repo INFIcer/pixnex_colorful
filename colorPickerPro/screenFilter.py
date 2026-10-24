@@ -26,7 +26,7 @@ import numpy as np
 import mss
 
 from PySide6.QtGui import QAction, QCursor
-from PySide6.QtCore import Qt, QTimer, QPoint
+from PySide6.QtCore import Qt, QTimer, QPoint, Signal
 from PySide6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QVBoxLayout, QMenu,
 )
@@ -112,12 +112,17 @@ class ScreenFilterWindow(CustomFramelessWindow):
     - 标题栏拖动，边缘/角缩放（交给窗口系统处理）
     - 自动折叠按钮：鼠标离开窗口自动收起为标题栏，移入标题栏展开；
       双击标题栏 / 空格键手动折叠或展开时同时关闭自动折叠
+    - 图像区域左键单击 / 按住拖动连续取色：发出 ``colorPicked(r, g, b)``，
+      标题栏按当前颜色模型短暂显示提示（如 ``L-0.61 C-0.25 H-321.7``）
     - 暂停/继续捕获按钮（暂停时画面冻结，禁止缩放）
     - 可见的边框：捕获中为强调色，暂停时变暗
     - 设置按钮打开滤镜方案管理面板（图层化增删/排序滤镜并编辑参数）
     """
 
     WDA_EXCLUDEFROMCAPTURE = 0x00000011
+
+    # 图像区域左键取色（sRGB 0-255）。
+    colorPicked = Signal(int, int, int)
 
     def __init__(self, scheme):
         """scheme 可以是 FilterScheme、ImageFilter 实例或 ImageFilter 子类。"""
@@ -150,6 +155,16 @@ class ScreenFilterWindow(CustomFramelessWindow):
         self._auto_collapse_timer = QTimer(self)
         self._auto_collapse_timer.setInterval(AUTO_COLLAPSE_POLL_MS)
         self._auto_collapse_timer.timeout.connect(self._on_auto_collapse_tick)
+
+        # 左键取色的反馈：标题栏副标题短暂显示颜色提示，随后自动清除。
+        self._pick_hint_timer = QTimer(self)
+        self._pick_hint_timer.setSingleShot(True)
+        self._pick_hint_timer.timeout.connect(self._clear_pick_hint)
+        # 按住左键拖动连续取色时的状态 / 更新节流（秒）与提示格式化回调。
+        self._picking = False
+        self._last_pick_at = 0.0
+        self._continuous_pick_interval = 0.03
+        self._color_formatter = None
 
         self._build_filter_ui()
 
@@ -249,6 +264,105 @@ class ScreenFilterWindow(CustomFramelessWindow):
     def hideEvent(self, event):
         self._auto_collapse_timer.stop()
         super().hideEvent(event)
+
+    # ------------------------------------------------------------------
+    # 图像区域左键取色（单击 / 按住拖动连续取色）
+    # ------------------------------------------------------------------
+    def set_color_formatter(self, formatter):
+        """设置取色提示的格式化回调 ``formatter(r, g, b) -> str``。
+
+        主窗口会传入「当前颜色模型」的格式化方法（如 ``L-0.61 C-0.25 H-321.7``）；
+        未设置时退回显示 HEX。回调在每次取色时调用，切换颜色模型后立即生效。
+        """
+        self._color_formatter = formatter
+
+    def mousePressEvent(self, event):
+        # 内容控件 PixmapWidget 不消费鼠标事件，点击会冒泡到窗口；标题栏按钮
+        # 自己 accept，不会走到这里。
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._picking = True
+            self._last_pick_at = 0.0
+            self._pick_color_from_image(
+                event.globalPosition().toPoint(), force=True)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        # 按住左键拖动：光标扫过的每个位置都取色（节流见 _pick_color_from_image）。
+        if self._picking and event.buttons() & Qt.MouseButton.LeftButton:
+            self._pick_color_from_image(event.globalPosition().toPoint())
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._picking = False
+        super().mouseReleaseEvent(event)
+
+    def _pick_color_from_image(self, global_pos: QPoint,
+                               *, force: bool = False) -> bool:
+        """取该处「显示图像」的颜色并发出 ``colorPicked``。
+
+        返回是否落在图像上（留白 / 无图像时为 False）。
+        """
+        color = self._color_at(global_pos)
+        if color is None:
+            return False
+        now = time.perf_counter()
+        if not force and now - self._last_pick_at < self._continuous_pick_interval:
+            return True                 # 拖动时节流，避免高频刷颜色同步
+        self._last_pick_at = now
+        self.colorPicked.emit(color.red(), color.green(), color.blue())
+        self._show_pick_hint(color)
+        return True
+
+    def _color_at(self, global_pos: QPoint):
+        """把全局坐标映射到显示图像像素，返回 ``QColor``；不在图像上返回 None。
+
+        显示区保持等比缩放并居中（见 ``PixmapWidget.paintEvent``），这里用同一
+        套换算把点击位置映射回 pixmap 像素；点在留白区域则忽略。
+        """
+        pixmap = self._content.pixmap()
+        if pixmap is None or pixmap.isNull():
+            return None
+        local = self._content.mapFromGlobal(global_pos)
+        inner = self._content.rect()
+        if not inner.contains(local):
+            return None
+        scaled = pixmap.scaled(
+            inner.size(), Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation)
+        if scaled.isNull():
+            return None
+        left = (inner.width() - scaled.width()) // 2
+        top = (inner.height() - scaled.height()) // 2
+        if not (left <= local.x() < left + scaled.width()
+                and top <= local.y() < top + scaled.height()):
+            return None                 # 点在等比缩放后的留白区域
+
+        image = pixmap.toImage()
+        px = int((local.x() - left) * image.width() / scaled.width())
+        py = int((local.y() - top) * image.height() / scaled.height())
+        px = max(0, min(image.width() - 1, px))
+        py = max(0, min(image.height() - 1, py))
+        return image.pixelColor(px, py)
+
+    def _show_pick_hint(self, color):
+        self.set_subtitle(self._pick_hint_text(color))
+        self._pick_hint_timer.start(1600)
+
+    def _pick_hint_text(self, color) -> str:
+        """取色提示文案：优先用当前颜色模型的样式（如 L-0.61 C-0.25 H-321.7）。"""
+        if self._color_formatter is not None:
+            try:
+                text = self._color_formatter(
+                    color.red(), color.green(), color.blue())
+            except Exception:
+                text = ""
+            if text:
+                return text
+        return f"#{color.red():02X}{color.green():02X}{color.blue():02X}"
+
+    def _clear_pick_hint(self):
+        self.set_subtitle("")
 
     def _toggle_capture(self):
         self._capturing = not self._capturing
@@ -565,12 +679,16 @@ class ScreenFilterDemo(FramelessWindowMixin, QMainWindow):
             return
 
         win = ScreenFilterWindow(scheme)
+        win.colorPicked.connect(self._on_filter_color_picked)
         self._windows.append(win)
         off = 30 * (len(self._windows) % 6)
         win.move(80 + off, 80 + off)
         win.start()
         win.destroyed.connect(lambda: self._on_closed(win))
         self._status.set_message(f"创建：{scheme.display_name()}", State.ACCENT)
+
+    def _on_filter_color_picked(self, r, g, b):
+        self._status.set_message(f"取色 #{r:02X}{g:02X}{b:02X}", State.ACCENT)
 
     def _on_closed(self, win: ScreenFilterWindow):
         if win in self._windows:

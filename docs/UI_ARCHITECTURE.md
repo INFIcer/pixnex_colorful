@@ -111,8 +111,12 @@ class MyDialog(ThemedDialog):
 
 屏幕滤镜窗口（`ScreenFilterWindow`）同样有「自动折叠」标题栏按钮：鼠标离开窗口
 就收起为标题栏、移入标题栏展开；双击标题栏 / 空格键等手动折叠或展开会同时关闭
-自动折叠（手动操作优先）。窗口级轮询与「是否在拖拽 / 是否有模态弹窗」的判断在
-`auto_collapse.py`，主窗口和屏幕滤镜窗口共用。
+自动折叠（手动操作优先）。图像区域左键单击或**按住拖动**会连续取「显示图像」在该
+处的像素颜色，通过 `colorPicked(r, g, b)` 信号交给调用方（主窗口据此更新当前颜色）；
+标题栏副标题短暂显示提示，文案由 `set_color_formatter()` 注入（主窗口传入当前颜色
+模型的 `format_srgb()`，如 `L-0.61 C-0.25 H-321.7`；未注入时退回 HEX）。窗口级轮询
+与「是否在拖拽 / 是否有模态弹窗」的判断在 `auto_collapse.py`，主窗口和屏幕滤镜窗口
+共用。
 
 主窗口标题栏最左侧显示应用图标（`init_frameless(..., icon=app_icon())`）：
 - 图标来自 `colorPickerPro/ui/app_icon.py`，实际文件是项目根的 `pixnex.ico`（由
@@ -160,10 +164,11 @@ class MyWindow(FramelessWindowMixin, QMainWindow):   # 或 QDialog / QWidget
 | `IconButton` | `IconButton("svg名")`、`set_icon("svg名")` | 所有图标按钮 |
 | `customFrame.CustomFramelessWindow` | `content_rect_global()`、`add_title_bar_button()`、`toggle_collapse()`、`is_collapsed()` | `screenFilter` |
 | `main.MainWindow` | `is_collapsed()`、`toggle_collapse()`；`MainWindow(state_store=...)` 可注入状态存储 | `main.py` / 测试 |
+| `screenFilter.ScreenFilterWindow` | 信号 `colorPicked(r, g, b)`（图像区域单击/拖动连续取色）、`set_color_formatter(callable)`（提示文案）；自动折叠开关与 `toggle_collapse()` | `main.py` / 演示程序 |
 | `window_state.WindowStateStore` | `load()` / `save(WindowState)` / `persistent()`；`WindowState(auto_collapse, always_on_top, geometry)` | `main.py` |
 | `window_state.clamp_geometry` | 把恢复的窗口矩形夹进屏幕可用区域 | `main.py` / 测试 |
 | `auto_collapse` | `mouse_button_pressed()`、`modal_or_popup_open()`、`AUTO_COLLAPSE_POLL_MS`（自动折叠的公共轮询判断） | `main.py` / `screenFilter.py` |
-| `color_picker_widgets` | `set_model()` / `remove_listener()` | `main.py` / 取色对话框 |
+| `color_picker_widgets` | `set_model()` / `remove_listener()`；`BaseColorModel.format_srgb(r, g, b)` 按当前模型格式化颜色文本 | `main.py` / 取色对话框 / 屏幕滤镜取色提示 |
 
 ## 7. 自带验证
 
@@ -175,11 +180,13 @@ class MyWindow(FramelessWindowMixin, QMainWindow):   # 或 QDialog / QWidget
 .venv\Scripts\python.exe tests\test_sync_udm_regression.py
 .venv\Scripts\python.exe tests\test_window_state.py      # 自动折叠 + 窗口状态持久化
 .venv\Scripts\python.exe tests\test_screen_filter_auto_collapse.py  # 屏幕滤镜自动折叠
+.venv\Scripts\python.exe tests\test_screen_filter_pick_color.py      # 屏幕滤镜单击/拖动连续取色
 .venv\Scripts\python.exe tests\test_image_drop.py        # 图像拖放：是否显示拖入图像
 ```
 
 巡检断言：窗口均 frameless 且有 TitleBar、边框可见、边缘拖动缩放正确、
 无字符图标、SVG 引用存在、无越界/裁切、静态无 `setStyleSheet`；截图在 `build/ui-shots/`。
-主窗口 / 屏幕滤镜窗口自动折叠的冒烟检查也包含在 `tests/ui_layout_check.py`
-（`func:auto_collapse`、`func:screen_filter_auto_collapse`）。
+主窗口 / 屏幕滤镜窗口自动折叠、屏幕滤镜左键取色的冒烟检查也包含在
+`tests/ui_layout_check.py`（`func:auto_collapse`、`func:screen_filter_auto_collapse`、
+`func:screen_filter_pick_color`）。
 颜色同步回归测试保证 UDM 后端保持延迟导入/懒加载（提前 import psutil 会让 UDM 拒绝内存访问）。

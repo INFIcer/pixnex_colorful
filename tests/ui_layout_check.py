@@ -19,7 +19,7 @@
    引用的 SVG 资源齐全、QSS url() 资源存在且不再引用 PNG；
 5. 功能冒烟：模型切换 / 参数区重建 / 查看器变换 / 弹窗确认 / 方案保存 /
    屏幕滤镜定时器 / sync 状态 / 标题栏按钮 / 关闭按钮 / 最大化切换 /
-   主窗口与屏幕滤镜窗口自动折叠；
+   主窗口与屏幕滤镜窗口自动折叠 / 屏幕滤镜左键取色；
 6. 打印一行一个界面的 PASS/FAIL 报告并汇总，有 FAIL 时退出码为 1。
 
 刻意不设置 QT_QPA_PLATFORM=offscreen：offscreen 插件没有系统字体，截图会变成
@@ -890,9 +890,14 @@ def _run_functional_checks(fixtures: Fixtures,
     # ---- 8b. 屏幕滤镜窗口自动折叠：离开收起 / 进入展开 / 手动关闭开关 ----
     def check_screen_filter_auto_collapse() -> None:
         from PySide6.QtCore import QPoint
+        from colorPickerPro import screenFilter as screen_filter_module
         from colorPickerPro.screenFilter import ScreenFilterWindow
         from colorPickerPro.ui.tokens import SIZE
 
+        # 真机鼠标按键状态会让「拖拽中不折叠」的保护生效；冒烟测试要确定性，
+        # 临时替换物理按键判断（该保护由 test_window_state 单独覆盖）。
+        original_mouse_guard = screen_filter_module.mouse_button_pressed
+        screen_filter_module.mouse_button_pressed = lambda: False
         win = ScreenFilterWindow(fixtures.scheme(1, "自动折叠滤镜"))
         try:
             harness.prepare(win)
@@ -927,6 +932,40 @@ def _run_functional_checks(fixtures: Fixtures,
         finally:
             win.stop()
             win._auto_collapse_timer.stop()
+            win.close()
+            win.deleteLater()
+            screen_filter_module.mouse_button_pressed = original_mouse_guard
+            QApplication.processEvents()
+
+    # ---- 8c. 屏幕滤镜窗口：图像区域左键取色 ---------------------------
+    def check_screen_filter_pick_color() -> None:
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor, QImage, QPixmap
+        from PySide6.QtTest import QTest
+        from colorPickerPro.screenFilter import ScreenFilterWindow
+
+        win = ScreenFilterWindow(fixtures.scheme(1, "取色滤镜"))
+        try:
+            harness.prepare(win)
+            harness.settle(win)
+            image = QImage(8, 8, QImage.Format.Format_ARGB32)
+            image.fill(QColor("#336699"))
+            win._content.setPixmap(QPixmap.fromImage(image))
+            picked = []
+            win.colorPicked.connect(lambda r, g, b: picked.append((r, g, b)))
+            QTest.mouseClick(win._content, Qt.MouseButton.LeftButton,
+                             pos=win._content.rect().center())
+            QApplication.processEvents()
+            assert picked == [(0x33, 0x66, 0x99)], (
+                f"屏幕滤镜左键取色结果不正确: {picked}")
+            assert "#336699" in win.title_bar.subtitle_label.full_text(), (
+                f"取色后标题栏没有显示 HEX: "
+                f"{win.title_bar.subtitle_label.full_text()!r}")
+            win._clear_pick_hint()
+            assert win.title_bar.subtitle_label.full_text() == ""
+        finally:
+            win._pick_hint_timer.stop()
+            win.stop()
             win.close()
             win.deleteLater()
             QApplication.processEvents()
@@ -1171,10 +1210,14 @@ def _run_functional_checks(fixtures: Fixtures,
     # ---- 11b. 主窗口自动折叠：离开折叠为标题栏 / 进入展开 ---------------
     def check_auto_collapse() -> None:
         from PySide6.QtCore import QPoint
-        from colorPickerPro.main import MainWindow
+        from colorPickerPro import main as main_module
         from colorPickerPro.ui.tokens import SIZE
 
-        win = MainWindow()
+        # 真机鼠标按键状态会让「拖拽中不折叠」的保护生效；冒烟测试要确定性，
+        # 临时替换物理按键判断（该保护由 test_window_state 单独覆盖）。
+        original_mouse_guard = main_module.mouse_button_pressed
+        main_module.mouse_button_pressed = lambda: False
+        win = main_module.MainWindow()
         try:
             harness.prepare(win)
             harness.settle(win)
@@ -1213,6 +1256,7 @@ def _run_functional_checks(fixtures: Fixtures,
             QApplication.processEvents()
             win.deleteLater()
             QApplication.processEvents()
+            main_module.mouse_button_pressed = original_mouse_guard
 
     # ---- 12. 手动边缘缩放（应用级事件过滤器）+ 1px 边框 ---------------
     def check_frameless_resize_and_rounding() -> None:
@@ -1333,6 +1377,7 @@ def _run_functional_checks(fixtures: Fixtures,
     record("filter_scheme_save", check_filter_scheme_save)
     record("screen_filter_timers", check_screen_filter_timers)
     record("screen_filter_auto_collapse", check_screen_filter_auto_collapse)
+    record("screen_filter_pick_color", check_screen_filter_pick_color)
     record("titlebar_buttons", check_titlebar_buttons)
     record("titlebar_close", check_titlebar_close)
     record("titlebar_maximize", check_titlebar_maximize)
@@ -1444,7 +1489,7 @@ def main(argv: list[str] | None = None) -> int:
     emit("      静态检查: setStyleSheet=0、emoji=0、UI 文案无图标字符、"
          "SVG 图标资源齐全、QSS url() 无缺失/无 PNG。")
     emit("      功能冒烟: 模型切换/参数重建/查看器变换/弹窗/标题栏按钮/关闭/最大化/"
-         "主窗口与屏幕滤镜自动折叠。")
+         "自动折叠/屏幕滤镜取色。")
     if args.only:
         emit(f"筛选: --only {args.only!r}")
     emit("=" * 100)

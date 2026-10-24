@@ -18,19 +18,10 @@ The module is split so the interesting part stays testable off-Windows:
 from __future__ import annotations
 
 import ctypes
-import os
 import sys
 from dataclasses import dataclass
 
-from .win_process import find_process_pids
-
 IS_WINDOWS = sys.platform == "win32"
-
-# 进程不出现在普通枚举里时，用窗口标题/类名里的这些标记识别它。
-_PROCESS_NAME_HINTS: dict[str, tuple[str, ...]] = {
-    "udmpaintpro": ("udmpaint", "优动漫paint", "udm paint"),
-    "udmpaintex": ("udmpaintex", "优动漫paint", "udm paint"),
-}
 
 # Window styles / API constants used below (documented in winuser.h).
 _GWL_EXSTYLE = -20
@@ -90,33 +81,22 @@ def pick_main_window(windows: "list[WindowInfo] | tuple[WindowInfo, ...]",
 
 
 def pids_for_process_names(names) -> "list[int]":
-    """Running pids whose executable name matches ``names`` (case-insensitive).
-
-    Window matching runs first: some drawing apps (UDM Paint) deny a later
-    ``OpenProcess`` for a while after broad process scans, so the target
-    process must not be touched before the real handle is opened.
-
-    The fallback deliberately uses the native EnumProcesses helper instead of
-    :mod:`psutil`: importing psutil makes UDM Paint's process protection deny
-    memory access to this process for good (see :mod:`.win_process`), which
-    used to break UDM colour sync after a UDM restart.
-    """
+    """Running pids whose executable name matches ``names`` (case-insensitive)."""
     wanted = {str(n).lower() for n in names if n}
     if not wanted or not IS_WINDOWS:
+        return []
+    try:
+        import psutil
+    except ImportError:  # pragma: no cover - psutil ships with the app
         return []
 
     pids: list[int] = []
     try:
-        pids.extend(pid for pid in _window_pids_for_names(wanted)
-                    if pid not in pids)
-    except NameError:  # pragma: no cover - non-Windows
-        pass
-    if pids:
+        for proc in psutil.process_iter(["pid", "name"]):
+            if (proc.info.get("name") or "").lower() in wanted:
+                pids.append(int(proc.info["pid"]))
+    except Exception:
         return pids
-
-    for pid in find_process_pids(names):
-        if pid not in pids:
-            pids.append(pid)
     return pids
 
 
@@ -177,54 +157,6 @@ if IS_WINDOWS:  # pragma: no cover - exercised on a real desktop only
         pid = wintypes.DWORD()
         _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         return int(pid.value)
-
-    _kernel32.OpenProcess.argtypes = (
-        wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-    _kernel32.OpenProcess.restype = wintypes.HANDLE
-    _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
-    _kernel32.QueryFullProcessImageNameW.argtypes = (
-        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
-        ctypes.POINTER(wintypes.DWORD))
-    _kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
-
-    def _window_pids_for_names(wanted: set[str]) -> list[int]:
-        """PIDs of processes owning a top-level window that identifies them.
-
-        Deliberately does **not** open the target process: some drawing apps
-        (UDM Paint) deny a later ``OpenProcess(ALL_ACCESS)`` for a short time
-        after any probe handle was opened, which would break the memory sync.
-        The executable name is matched against window titles/class names
-        instead (e.g. ``GDI+ Window (UDMPaintPRO.exe)``).
-        """
-        markers: set[str] = set()
-        for name in wanted:
-            stem = os.path.splitext(name)[0].lower()
-            markers.add(name.lower())
-            markers.add(stem)
-            for hint in _PROCESS_NAME_HINTS.get(stem, ()):  # type: ignore[name-defined]
-                markers.add(hint.lower())
-
-        found: list[int] = []
-        seen: set[int] = set()
-
-        def _callback(hwnd, _lparam):
-            hwnd = int(hwnd)
-            pid = _window_pid(hwnd)
-            if not pid or pid in seen:
-                return True
-            length = _user32.GetWindowTextLengthW(hwnd)
-            title = ctypes.create_unicode_buffer(length + 1)
-            _user32.GetWindowTextW(hwnd, title, length + 1)
-            class_name = ctypes.create_unicode_buffer(256)
-            _user32.GetClassNameW(hwnd, class_name, 256)
-            haystack = f"{title.value} {class_name.value}".lower()
-            if any(marker in haystack for marker in markers):
-                seen.add(pid)
-                found.append(pid)
-            return True
-
-        _user32.EnumWindows(_WNDENUMPROC(_callback), 0)
-        return found
 
     def _foreground_pid() -> int:
         hwnd = _user32.GetForegroundWindow()
@@ -322,8 +254,8 @@ class WindowFocusReturner:
             if self._try_pid(int(pid)):
                 return True
 
-        # 后端还没连上（拿不到 pid）时的兜底：按进程名找。窗口枚举优先，
-        # 不做会触发 UDM 进程保护的 psutil 扫描。
+        # 后端还没连上（拿不到 pid）时的兜底：按进程名找。psutil 要扫描整个
+        # 进程表，所以只在 pid 这条路走不通时才走它。
         for candidate in pids_for_process_names(process_names):
             if pid and candidate == int(pid):
                 continue

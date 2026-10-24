@@ -22,9 +22,7 @@ import sys
 import time
 from typing import Any, Optional, cast
 
-# 不要 import psutil：导入 psutil 会让 UDM Paint 的进程保护永久拒绝本进程的
-# 内存访问（详见 .win_process），从而让 UDM 颜色同步在重启后彻底失效。
-# 需要进程查询时统一走 .win_process 的原生实现。
+import psutil
 
 try:
     import pythoncom
@@ -44,7 +42,6 @@ from .photoshop_script_bridge import (
     PANEL_VERSION,
     PhotoshopScriptBridge,
 )
-from .win_process import pid_exists
 
 PROCESS_NAME = "Photoshop.exe"
 
@@ -235,7 +232,13 @@ class PhotoshopSync:
         if not self._proc_handle:
             self._proc_handle = self.K32.OpenProcess(0x00100000, False, self._pid)
             if not self._proc_handle:
-                return pid_exists(self._pid)
+                try:
+                    return any(
+                        p.info["pid"] == self._pid
+                        for p in psutil.process_iter(["pid"])
+                    )
+                except Exception:
+                    return False
         return self.K32.WaitForSingleObject(self._proc_handle, 0) != 0
 
     # -- slot readers ---------------------------------------------------------------

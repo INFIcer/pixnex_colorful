@@ -8,10 +8,9 @@ u32-per-channel encoding and regular RGB triples.
 Two address-resolution modes are supported:
 
 * **pointer mode** (default) — chase a build-specific anchor pointer from
-  the loaded module base to the live color slot on every access.  The anchor
-  is authoritative: when UDM reallocates the color object (restart, other
-  document) the resolved slot is re-read from it instead of pinning the
-  first absolute address.
+  the loaded module base to the live color slot, with re-validation on
+  every access so a transient zero-initialized buffer cannot hijack the
+  resolved target.
 * **absolute mode** — bypass the pointer chase and use fixed addresses
   from ``config.ini``.
 """
@@ -23,7 +22,6 @@ import math
 import os
 import struct
 import sys
-import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -36,6 +34,7 @@ except ImportError:  # pragma: no cover
 
 from .brush_color_spaces import (
     SPACE_ORDER,
+    any_space_has_nonzero_raws,
     build_space_addresses,
     build_space_offsets,
     decode_space_raws,
@@ -44,7 +43,6 @@ from .brush_color_spaces import (
     resolve_active_rgb,
     rgb_to_space_values,
 )
-from .window_focus import pids_for_process_names
 
 SECTION_NAME = "UDMPaint"
 DEFAULT_VERSION_KEY = "udm4.0"
@@ -197,63 +195,19 @@ class UDMSync:
         return False
 
     def _try_open_with(self, profile: _UDMBuildProfile) -> bool:
-        # UDM 不会出现在普通进程枚举里；用窗口反查 PID 后再按 PID 打开。
-        # 它的进程保护偶尔会拒绝一次 OpenProcess，所以短暂重试几次。
         try:
-            pids = pids_for_process_names((profile.process_name,))
-        except Exception:
-            pids = []
-        for pid in pids:
-            for attempt in range(3):
-                try:
-                    pm = Pymem(pid)
-                except Exception as exc:
-                    _log(f"open pid {pid} attempt {attempt}: {exc!r}")
-                    time.sleep(0.08)
-                    continue
-                if self._finish_attach(pm, profile):
-                    return True
-                time.sleep(0.08)
-        if pids:
-            # 找到窗口 PID 时只按 PID 打开：此时再按名字枚举进程会再次触发
-            # UDM 的进程保护，让下一轮更打不开。
-            self._drop_connection()
-            return False
-        # 兜底：按 exe 名打开（没有顶层窗口的普通进程）。
-        for _attempt in range(2):
-            try:
-                pm = Pymem(profile.process_name)
-            except Exception:
-                time.sleep(0.1)
-                continue
-            if self._finish_attach(pm, profile):
-                return True
-        self._drop_connection()
-        return False
-
-    def _finish_attach(self, pm, profile: _UDMBuildProfile) -> bool:
-        try:
-            mod = module_from_name(pm.process_handle, profile.process_name)
-            if mod is None:
-                mod = module_from_name(
-                    pm.process_handle,
-                    os.path.splitext(profile.process_name)[0])
+            self.pm = Pymem(profile.process_name)
+            self.pid = self.pm.process_id
+            mod = module_from_name(self.pm.process_handle, profile.process_name)
             if mod is None:
                 raise ValueError("module not found")
-            self.pm = pm
-            self.pid = pm.process_id
-            self.module_base = mod.lpBaseOfDll
-            self.target = int(
-                pm.read_longlong(self.module_base + profile.base_offset))
-            _log(f"attached to {profile.process_name} pid={self.pid} "
-                 f"base=0x{self.module_base:X}")
+            module_base = mod.lpBaseOfDll
+            self.module_base = module_base
+            ptr_addr = module_base + profile.base_offset
+            self.target = int(self.pm.read_longlong(ptr_addr))
             return True
-        except Exception as exc:
-            _log(f"attach {profile.process_name} failed: {exc!r}")
-            try:
-                pm.close_process()
-            except Exception:
-                pass
+        except Exception:
+            self._drop_connection()
             return False
 
     def _drop_connection(self) -> None:
@@ -307,19 +261,17 @@ class UDMSync:
         if self.module_base is None:
             return None
 
-        # 每次访问都重新读取锚点指针：UDM 重启、切换文档或重建颜色对象后
-        # 颜色槽地址会变，只有始终跟随锚点才是正确的。以前只在“新指向的槽
-        # 内容非全 0”时才更新 target，一旦新槽恰好是纯黑（0,0,0），就会一直
-        # 读写旧地址（相当于把第一次解析到的绝对地址当成常量），重启后同步
-        # 看似连上却完全不生效。
         try:
-            fresh_pointer = int(
-                self.pm.read_longlong(self.module_base + self.base_offset))
+            fresh_pointer = int(self.pm.read_longlong(self.module_base + self.base_offset))
+            if fresh_pointer:
+                try:
+                    probe = self._snapshot_color_slot(fresh_pointer)
+                    if any_space_has_nonzero_raws(probe) or self.target is None:
+                        self.target = fresh_pointer
+                except Exception:
+                    pass
         except Exception:
-            fresh_pointer = 0
-
-        if fresh_pointer and fresh_pointer != self.target:
-            self.target = fresh_pointer
+            pass
 
         if self.target is None:
             self._count_resolve_failure()
@@ -413,8 +365,8 @@ class UDMSync:
         return _PROCESS_NAMES
 
     def status(self) -> dict[str, object]:
-        # 不在这里重新连接：连接由 get_color()/set_color() 负责。否则一轮
-        # 轮询会重复尝试连接，状态更新会被拖慢。
+        if self.pm is None:
+            self.connect()
         space_addrs = self._resolve_space_addresses() if self.pm is not None else None
         connected = (
             self.pm is not None

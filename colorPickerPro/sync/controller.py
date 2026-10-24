@@ -49,12 +49,8 @@ class SyncController(QThread):
         self._pending: tuple | None = None
         self._stop = False
 
-        # 后端延迟创建：PhotoshopSync 初始化时会枚举进程/COM，这会触发
-        # UDM Paint 的进程保护，使之后的内存同步打不开 UDM。只有真正用到
-        # 某个后端时才构造它。
-        self._backend_lock = threading.Lock()
-        self._udm: UDMSync | None = None
-        self._ps: PhotoshopSync | None = None
+        self.udm = UDMSync()
+        self.ps = PhotoshopSync()
         # GUI-thread only: hands the window focus back to the synced app.
         self._focus = WindowFocusReturner()
 
@@ -62,31 +58,6 @@ class SyncController(QThread):
         self._last_observed: tuple | None = None
         self._last_connected: bool | None = None
         self._last_message: str = ""
-
-    # ----- lazy backends ---------------------------------------------------
-    @property
-    def udm(self) -> UDMSync:
-        if self._udm is None:
-            with self._backend_lock:
-                if self._udm is None:
-                    self._udm = UDMSync()
-        return self._udm
-
-    @udm.setter
-    def udm(self, backend) -> None:
-        self._udm = backend
-
-    @property
-    def ps(self) -> PhotoshopSync:
-        if self._ps is None:
-            with self._backend_lock:
-                if self._ps is None:
-                    self._ps = PhotoshopSync()
-        return self._ps
-
-    @ps.setter
-    def ps(self, backend) -> None:
-        self._ps = backend
 
     # ----- public API (GUI thread) ---------------------------------------
     def set_mode(self, mode: str) -> None:

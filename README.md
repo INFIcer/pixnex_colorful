@@ -137,6 +137,9 @@
 # 屏幕滤镜窗口图像区域左键取色（单击 / 按住拖动连续取色，按当前模型提示）
 .venv\Scripts\python.exe tests\test_screen_filter_pick_color.py
 
+# 无边框窗口边缘缩放（含窗口关闭后重新打开仍可缩放）
+.venv\Scripts\python.exe tests\test_frameless_resize.py
+
 # 图像拖放控件：拖入图像是否显示在控件里（默认不显示，仍会发出 imageReceived）
 .venv\Scripts\python.exe tests\test_image_drop.py
 

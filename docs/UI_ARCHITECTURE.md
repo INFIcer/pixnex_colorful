@@ -100,7 +100,8 @@ class MyDialog(ThemedDialog):
 - 置顶：Windows 下用原生 `SetWindowPos(HWND_TOPMOST)`，不使用会重建窗口的 `setWindowFlag`，避免闪烁；
 - 右下角 `QSizeGrip`；
 - 弹窗显示时前置（`raise + activate`）；父窗口置顶时弹窗自动继承置顶；
-- 关闭时移除全局事件过滤器。
+- 关闭时移除全局事件过滤器，`showEvent` 里按需重新安装：窗口关掉后再打开
+  （例如复用的滤镜方案面板）仍可拖边缩放、缩放光标仍正常。
 
 主窗口额外约定：标题栏有「自动折叠 / 置顶（图钉）/ 最小化 / 关闭」，没有最大化；
 置顶切换 `WindowStaysOnTopHint`；自动折叠开启后，鼠标离开主窗口区域就折叠成一条
@@ -181,12 +182,14 @@ class MyWindow(FramelessWindowMixin, QMainWindow):   # 或 QDialog / QWidget
 .venv\Scripts\python.exe tests\test_window_state.py      # 自动折叠 + 窗口状态持久化
 .venv\Scripts\python.exe tests\test_screen_filter_auto_collapse.py  # 屏幕滤镜自动折叠
 .venv\Scripts\python.exe tests\test_screen_filter_pick_color.py      # 屏幕滤镜单击/拖动连续取色
+.venv\Scripts\python.exe tests\test_frameless_resize.py              # 无边框窗口缩放（含关闭后重开）
 .venv\Scripts\python.exe tests\test_image_drop.py        # 图像拖放：是否显示拖入图像
 ```
 
 巡检断言：窗口均 frameless 且有 TitleBar、边框可见、边缘拖动缩放正确、
 无字符图标、SVG 引用存在、无越界/裁切、静态无 `setStyleSheet`；截图在 `build/ui-shots/`。
-主窗口 / 屏幕滤镜窗口自动折叠、屏幕滤镜左键取色的冒烟检查也包含在
-`tests/ui_layout_check.py`（`func:auto_collapse`、`func:screen_filter_auto_collapse`、
-`func:screen_filter_pick_color`）。
+主窗口 / 屏幕滤镜窗口自动折叠、屏幕滤镜左键取色、复用窗口重新显示后的缩放
+冒烟检查也包含在 `tests/ui_layout_check.py`（`func:auto_collapse`、
+`func:screen_filter_auto_collapse`、`func:screen_filter_pick_color`、
+`func:frameless_resize_reopen`）。
 颜色同步回归测试保证 UDM 后端保持延迟导入/懒加载（提前 import psutil 会让 UDM 拒绝内存访问）。

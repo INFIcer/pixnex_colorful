@@ -275,9 +275,7 @@ class FramelessWindowMixin:
             self._frameless_grip.setFixedSize(14, 14)
             self._frameless_grip.raise_()
 
-        app = QApplication.instance()
-        if app is not None:
-            app.installEventFilter(self)
+        self._install_frameless_event_filter()
         return self.title_bar
 
     # ---- public helpers ------------------------------------------------
@@ -294,10 +292,31 @@ class FramelessWindowMixin:
 
     def showEvent(self, event):  # noqa: N802 (Qt API)
         super().showEvent(event)
+        # 复用窗口（例如关掉后再打开的滤镜方案面板）close() 时事件过滤器会被
+        # 移除；showEvent 里确保重新挂上，否则边缘缩放 / 缩放光标会永久失效。
+        self._install_frameless_event_filter()
         self._place_size_grip()
         if getattr(self, "_raise_on_show", False):
             self.raise_()
             self.activateWindow()
+
+    def _install_frameless_event_filter(self) -> None:
+        """把窗口挂到应用级事件过滤器；重复调用安全。"""
+        if getattr(self, "_frameless_filter_installed", False):
+            return
+        app = QApplication.instance()
+        if app is None:
+            return
+        app.installEventFilter(self)
+        self._frameless_filter_installed = True
+
+    def _remove_frameless_event_filter(self) -> None:
+        if not getattr(self, "_frameless_filter_installed", False):
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        self._frameless_filter_installed = False
 
     def toggle_maximize(self) -> None:
         if not self._frameless_resizable:
@@ -417,9 +436,7 @@ class FramelessWindowMixin:
         self._place_size_grip()
 
     def closeEvent(self, event):  # noqa: N802 (Qt API)
-        app = QApplication.instance()
-        if app is not None:
-            app.removeEventFilter(self)
+        self._remove_frameless_event_filter()
         super().closeEvent(event)
 
     # ---- window system interaction ------------------------------------

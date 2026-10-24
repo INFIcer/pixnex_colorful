@@ -19,7 +19,7 @@
    引用的 SVG 资源齐全、QSS url() 资源存在且不再引用 PNG；
 5. 功能冒烟：模型切换 / 参数区重建 / 查看器变换 / 弹窗确认 / 方案保存 /
    屏幕滤镜定时器 / sync 状态 / 标题栏按钮 / 关闭按钮 / 最大化切换 /
-   主窗口与屏幕滤镜窗口自动折叠 / 屏幕滤镜左键取色；
+   主窗口与屏幕滤镜窗口自动折叠 / 屏幕滤镜左键取色 / 复用窗口重新显示后缩放；
 6. 打印一行一个界面的 PASS/FAIL 报告并汇总，有 FAIL 时退出码为 1。
 
 刻意不设置 QT_QPA_PLATFORM=offscreen：offscreen 插件没有系统字体，截图会变成
@@ -1367,6 +1367,51 @@ def _run_functional_checks(fixtures: Fixtures,
             win.deleteLater()
             QApplication.processEvents()
 
+    # ---- 12b. 复用窗口 close() 后重新 show() 仍可边缘缩放 ---------------
+    def check_frameless_resize_after_reopen() -> None:
+        from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        from colorPickerPro.filter_scheme_panel import FilterSchemePanel
+
+        panel = FilterSchemePanel(fixtures.scheme(1, "缩放复用"))
+        try:
+            harness.prepare(panel)
+            harness.settle(panel)
+
+            def _drag_right_edge() -> bool:
+                before = panel.width()
+                height = panel.height() // 2
+                edge = QPoint(panel.width() - 2, height)
+                for kind, pos, button, buttons in (
+                        (QEvent.Type.MouseButtonPress, edge,
+                         Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton),
+                        (QEvent.Type.MouseMove,
+                         QPoint(edge.x() + 60, height),
+                         Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton),
+                        (QEvent.Type.MouseButtonRelease,
+                         QPoint(edge.x() + 60, height),
+                         Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)):
+                    event = QMouseEvent(
+                        kind, QPointF(pos), QPointF(panel.mapToGlobal(pos)),
+                        button, buttons, Qt.KeyboardModifier.NoModifier)
+                    QApplication.sendEvent(panel, event)
+                    QApplication.processEvents()
+                return panel.width() >= before + 40
+
+            assert _drag_right_edge(), "滤镜方案面板首次显示时边缘缩放不可用"
+            panel.close()
+            QApplication.processEvents()
+            panel.show()                 # 复用窗口再次显示（不再经过 prepare）
+            QApplication.processEvents()
+            harness.settle(panel)
+            assert _drag_right_edge(), (
+                "滤镜方案面板关闭后重新打开，边缘缩放失效"
+                "（应用级事件过滤器未在 showEvent 重装）")
+        finally:
+            panel.close()
+            panel.deleteLater()
+            QApplication.processEvents()
+
     record("color_picker_models", check_color_picker_models)
     record("main_window_models", check_main_window_models)
     record("main_sync_status", check_main_sync_status)
@@ -1383,6 +1428,7 @@ def _run_functional_checks(fixtures: Fixtures,
     record("titlebar_maximize", check_titlebar_maximize)
     record("auto_collapse", check_auto_collapse)
     record("frameless_resize_round", check_frameless_resize_and_rounding)
+    record("frameless_resize_reopen", check_frameless_resize_after_reopen)
     return checks
 
 
@@ -1489,7 +1535,7 @@ def main(argv: list[str] | None = None) -> int:
     emit("      静态检查: setStyleSheet=0、emoji=0、UI 文案无图标字符、"
          "SVG 图标资源齐全、QSS url() 无缺失/无 PNG。")
     emit("      功能冒烟: 模型切换/参数重建/查看器变换/弹窗/标题栏按钮/关闭/最大化/"
-         "自动折叠/屏幕滤镜取色。")
+         "自动折叠/屏幕滤镜取色/复用窗口缩放。")
     if args.only:
         emit(f"筛选: --only {args.only!r}")
     emit("=" * 100)

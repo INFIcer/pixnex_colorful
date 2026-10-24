@@ -7,23 +7,25 @@
   be loaded at runtime (``colorPickerPro/ui/app_icon.py``);
 - the main window draws it in its custom title bar.
 
-The artwork is drawn here instead of being shipped as a binary blob, so it can
-be regenerated, restyled or resized from code at any time::
+The vector master is ``icon.svg`` in the project root.  It is rasterised with
+Qt (``QSvgRenderer``) at every size and packed into the multi-resolution .ico::
 
-    python tools/gen_app_icon.py            # rewrite pixnex.ico
+    python tools/gen_app_icon.py            # rewrite pixnex.ico from icon.svg
     python tools/gen_app_icon.py --preview  # also dump build/icon-preview/*.png
 
-Design: a dark rounded tile keeps the icon quiet next to the neutral dark
-interface, the hue ring is the colourful element (it *is* the product: a colour
-tool), and the white dot in the middle is the picked colour swatch.  Small
-sizes (16–24 px) are rendered with a thicker ring and a slightly larger dot so
-they stay legible in the title bar, task bar and Alt-Tab switcher.
+When ``icon.svg`` is absent the script falls back to the built-in artwork below
+(a dark rounded tile with a hue ring and a picked-colour dot), so the .ico can
+always be regenerated.  ``--source vector`` forces that fallback, which is also
+handy for comparing an SVG draft against the previous design.  Sizes are
+supersampled and downscaled with premultiplied alpha, so 16–24 px frames stay
+legible in the title bar, task bar and Alt-Tab switcher.
 """
 
 from __future__ import annotations
 
 import argparse
 import colorsys
+import os
 import struct
 from pathlib import Path
 
@@ -32,6 +34,9 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 ICO_PATH = ROOT / "pixnex.ico"
+#: Vector master.  ``colorPickerPro/ui/assets/icons/`` is reserved for the
+#: monochrome 16 px interface glyphs, so the app icon lives at the root.
+SOURCE_SVG = ROOT / "icon.svg"
 PREVIEW_DIR = ROOT / "build" / "icon-preview"
 
 #: Icon sizes stored in the .ico.  The set covers every Windows DPI step
@@ -86,8 +91,53 @@ def _smoothstep(edge0: float, edge1: float, value: np.ndarray) -> np.ndarray:
     return t * t * (3.0 - 2.0 * t)
 
 
-def render_icon(size: int) -> Image.Image:
-    """Render one square icon frame at *size* pixels (RGBA)."""
+def _render_svg(size: int) -> Image.Image:
+    """Rasterise ``icon.svg`` at *size* (supersampled, then downscaled)."""
+    # Qt 只需要 QGuiApplication 才能建 QImage；用 offscreen 平台，不依赖桌面。
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QGuiApplication, QImage, QPainter
+    from PySide6.QtSvg import QSvgRenderer
+
+    if QGuiApplication.instance() is None:
+        QGuiApplication([])
+
+    renderer = QSvgRenderer(str(SOURCE_SVG))
+    if not renderer.isValid():
+        raise SystemExit(f"无法解析 SVG：{SOURCE_SVG}")
+
+    pixels = size * SUPERSAMPLE
+    image = QImage(pixels, pixels, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(0)
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    renderer.render(painter, QRectF(0, 0, pixels, pixels))
+    painter.end()
+
+    image = image.convertToFormat(QImage.Format.Format_RGBA8888)
+    raw = np.frombuffer(image.constBits(), dtype=np.uint8)
+    rows = raw.reshape(image.height(), image.bytesPerLine())
+    frame = rows[:, : image.width() * 4].reshape(
+        image.height(), image.width(), 4).astype(np.float32) / 255.0
+    return _downsample(frame, size)
+
+
+def render_icon(size: int, source: str = "auto") -> Image.Image:
+    """Render one square icon frame at *size* pixels (RGBA).
+
+    ``source`` is ``auto`` (SVG when present), ``svg`` (require the SVG) or
+    ``vector`` (force the built-in drawing).
+    """
+    if source == "svg" or (source == "auto" and SOURCE_SVG.is_file()):
+        if not SOURCE_SVG.is_file():
+            raise SystemExit(f"找不到 {SOURCE_SVG}（--source svg 需要它）")
+        return _render_svg(size)
+    return _render_drawn(size)
+
+
+def _render_drawn(size: int) -> Image.Image:
+    """Built-in fallback artwork: dark tile + hue ring + picked-colour dot."""
     n = size * SUPERSAMPLE
     coords = (np.arange(n, dtype=np.float32) + 0.5) / n
     x, y = np.meshgrid(coords, coords)
@@ -238,10 +288,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--preview", action="store_true",
                         help="write PNG previews to build/icon-preview")
+    parser.add_argument("--source", choices=("auto", "svg", "vector"),
+                        default="auto",
+                        help="auto=有 icon.svg 就用它；svg=必须用；vector=内置矢量图")
     args = parser.parse_args(argv)
 
-    frames = {size: render_icon(size) for size in ICO_SIZES}
+    use_svg = args.source == "svg" or (args.source == "auto"
+                                       and SOURCE_SVG.is_file())
+    frames = {size: render_icon(size, args.source) for size in ICO_SIZES}
     write_ico(ICO_PATH, frames)
+    print(f"source: {'icon.svg' if use_svg else '内置矢量图'}")
     print(f"wrote {ICO_PATH.relative_to(ROOT)} "
           f"({ICO_PATH.stat().st_size} bytes, sizes {sorted(frames)})")
 

@@ -195,15 +195,13 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         return card
 
     def _build_picker_card(self) -> Card:
-        card = Card("图形化选色")
-        self._graph_hint = CaptionLabel("拖动取色")
-        card.add_header_widget(self._graph_hint)
+        card = Card("图形选色器")
         self._graph = GraphicalPicker(self._model, size=220)
         card.add(self._graph)
         return card
 
     def _build_sliders_card(self) -> Card:
-        card = Card("滑块微调")
+        card = Card("滑块")
         self._slider_widget = DynamicSlidersWidget(self._model)
         card.add(self._slider_widget)
         return card
@@ -249,8 +247,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         return card
 
     def _build_tools_card(self) -> Card:
-        card = Card("滤镜与图像对比")
-        card.add_header_widget(CaptionLabel("方案可叠加滤镜"))
+        card = Card("滤镜")
         self._image_drop = ImageDropWidget(
             placeholder_text="拖入或粘贴图像",
             drop_hint="释放以对比滤镜",

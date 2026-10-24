@@ -19,7 +19,7 @@ colorPickerPro/ui/
     stylesheet.py     由令牌生成全局 QSS（唯一允许写选择器的地方）
     theme.py          apply_theme(app)：Fusion + 调色板 + 字体 + 中文翻译 + 全局 QSS
     icons.py          SVG 图标查找（icon/icon_names/icon_pixmap）
-    app_icon.py       应用图标 QIcon（项目根 pixnex.ico，窗口/任务栏/标题栏共用）
+    app_icon.py       应用图标 QIcon（根目录 icon.svg 生成的 pixnex.ico，窗口/任务栏/标题栏共用）
     assets/icons/*.svg 全部界面图标（由 tools/gen_ui_assets.py 生成）
     components/      可复用控件
 ```

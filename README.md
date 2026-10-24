@@ -128,6 +128,9 @@
 # 主窗口自动折叠 + 自动折叠/置顶/位置尺寸状态持久化
 .venv\Scripts\python.exe tests\test_window_state.py
 
+# 图像拖放控件：拖入图像是否显示在控件里（默认不显示，仍会发出 imageReceived）
+.venv\Scripts\python.exe tests\test_image_drop.py
+
 # 同步状态文案（未启动 / 未连接 / 已同步；重新开启后必须再次推送）
 .venv\Scripts\python.exe tests\test_sync_status.py
 
@@ -203,7 +206,7 @@ build.bat                     # 一键打包，产物 dist\pixnex.exe（单文�
 ## 图像滤镜对比窗口
 
 ### 打开方式
-在主窗口下方拖放区域**拖入**图片，或鼠标悬浮在区域时 **Ctrl+V 粘贴**图片。
+在主窗口下方拖放区域**拖入**图片，或鼠标悬浮在区域时 **Ctrl+V 粘贴**图片。拖放区只作为入口，不显示载入的图片。
 
 ### 布局模式
 

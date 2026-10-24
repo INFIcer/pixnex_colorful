@@ -42,10 +42,19 @@ class ImageDropWidget(QWidget):
     imageReceived = Signal(object, str)
 
     def __init__(self, placeholder_text="拖入或粘贴图像",
-                 drop_hint="释放以载入", parent=None):
+                 drop_hint="释放以载入", parent=None, *,
+                 show_dropped_image: bool = False):
+        """图像拖放区。
+
+        ``show_dropped_image`` 控制拖入 / 粘贴的图像是否显示在控件里，默认关闭：
+        关闭时仍然会发出 ``imageReceived``，但不会写入自身的 ``_pixmap``，控件
+        保持占位提示（调用方通常只需要拿图像去开别的窗口）。``set_pixmap()``
+        是显式设置接口，不受该开关影响。
+        """
         super().__init__(parent)
         self._placeholder_text = placeholder_text
         self._drop_hint_text = drop_hint
+        self._show_dropped_image = bool(show_dropped_image)
         self._pixmap = QPixmap()
         self._drag_hover = False
 
@@ -98,6 +107,15 @@ class ImageDropWidget(QWidget):
         if color is not None:
             self._drop_hint_color = color
         self.update()
+
+    @property
+    def show_dropped_image(self) -> bool:
+        return self._show_dropped_image
+
+    @show_dropped_image.setter
+    def show_dropped_image(self, enabled: bool):
+        """切换拖入图像的显示；只影响之后拖入 / 粘贴的图像。"""
+        self._show_dropped_image = bool(enabled)
 
     def set_pixmap(self, pixmap: QPixmap):
         self._pixmap = pixmap
@@ -204,14 +222,18 @@ class ImageDropWidget(QWidget):
         mime = QApplication.clipboard().mimeData()
         self._process_mime_data(mime)
 
+    def _deliver_image(self, pixmap: QPixmap, name: str):
+        """图像只发给调用方；开关关闭时不保存到自身 ``_pixmap``（不显示）。"""
+        if self._show_dropped_image:
+            self._pixmap = pixmap
+        self.imageReceived.emit(pixmap, name)
+        self.update()
+
     def _process_mime_data(self, mime):
         if mime.hasImage():
             image = mime.imageData()
             if isinstance(image, QImage) and not image.isNull():
-                pixmap = QPixmap.fromImage(image)
-                self._pixmap = pixmap
-                self.imageReceived.emit(pixmap, "")
-                self.update()
+                self._deliver_image(QPixmap.fromImage(image), "")
                 return
 
         if mime.hasUrls():
@@ -220,10 +242,7 @@ class ImageDropWidget(QWidget):
                     path = url.toLocalFile()
                     pixmap = QPixmap(path)
                     if not pixmap.isNull():
-                        self._pixmap = pixmap
-                        name = os.path.basename(path)
-                        self.imageReceived.emit(pixmap, name)
-                        self.update()
+                        self._deliver_image(pixmap, os.path.basename(path))
                         return
 
         if mime.hasText():
@@ -231,10 +250,7 @@ class ImageDropWidget(QWidget):
             if os.path.isfile(path):
                 pixmap = QPixmap(path)
                 if not pixmap.isNull():
-                    self._pixmap = pixmap
-                    name = os.path.basename(path)
-                    self.imageReceived.emit(pixmap, name)
-                    self.update()
+                    self._deliver_image(pixmap, os.path.basename(path))
 
 
 def run_demo():
@@ -252,7 +268,7 @@ def run_demo():
     layout.addWidget(TitleLabel("图像拖放区"))
     layout.addWidget(SubtitleLabel("拖入图像，或按 Ctrl+V 粘贴"))
 
-    drop_widget = ImageDropWidget()
+    drop_widget = ImageDropWidget(show_dropped_image=True)
     layout.addWidget(drop_widget, 1)
 
     info = CaptionLabel("等待图像")

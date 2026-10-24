@@ -177,7 +177,7 @@ class TitleBar(QWidget):
             # 3) 按相对位置移动还原后的窗口，使同一点仍位于光标下；
             # 4) 交给系统继续拖动。
             title_width = max(1, self.width())
-            rel_x = max(0.0, min(1.0, event.position().x() / title_width))
+            rel_x = event.position().x() if event.position().x()<title_width/2 else event.position().x()-title_width
             rel_y = max(0.0, event.position().y())
             normal = window.normalGeometry()
             restored_w = (normal.width()
@@ -191,7 +191,7 @@ class TitleBar(QWidget):
             window.showNormal()
 
             # 3) 移动：同一条标题栏相对位置重新贴到光标下
-            target_x = global_pos.x() - int(rel_x * restored_w)
+            target_x = global_pos.x() - int(min(restored_w/2, rel_x)  if rel_x>0 else max(restored_w/2, restored_w+rel_x))
             target_y = global_pos.y() - int(rel_y)
             screen = QGuiApplication.screenAt(global_pos) or window.screen()
             if screen is not None:

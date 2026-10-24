@@ -168,6 +168,7 @@ class MyWindow(FramelessWindowMixin, QMainWindow):   # 或 QDialog / QWidget
 .venv\Scripts\python.exe tests\ui_layout_check.py --dpi-pass 1.5
 .venv\Scripts\python.exe tests\test_sync_udm_regression.py
 .venv\Scripts\python.exe tests\test_window_state.py      # 自动折叠 + 窗口状态持久化
+.venv\Scripts\python.exe tests\test_image_drop.py        # 图像拖放：是否显示拖入图像
 ```
 
 巡检断言：窗口均 frameless 且有 TitleBar、边框可见、边缘拖动缩放正确、

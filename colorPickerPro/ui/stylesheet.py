@@ -31,6 +31,10 @@ def _asset(name: str) -> str:
 
 _QSS = Template(
     """
+/* Corner style: sharp.  Every radius token resolves to 0 (tokens.RADIUS),
+   and the few literal radii below are zero as well – the whole UI is squared
+   off.  Keep it that way: do not reintroduce rounding here. */
+
 /* ============================== base ============================== */
 * {
     outline: none;
@@ -142,7 +146,7 @@ QLabel#Badge {
     background-color: $surface_alt;
     color: $text_muted;
     border: 1px solid $border;
-    border-radius: 10px;
+    border-radius: 0px;
     padding: 2px 9px;
     font-size: ${font_tiny}px;
 }
@@ -416,22 +420,22 @@ QSlider {
 QSlider::groove:horizontal {
     height: 4px;
     background-color: $border;
-    border-radius: 2px;
+    border-radius: 0px;
 }
 QSlider::sub-page:horizontal {
     background-color: $accent;
-    border-radius: 2px;
+    border-radius: 0px;
 }
 QSlider::add-page:horizontal {
     background-color: $border;
-    border-radius: 2px;
+    border-radius: 0px;
 }
 QSlider::handle:horizontal {
     background-color: $text;
     width: 14px;
     height: 14px;
     margin: -6px 0px;
-    border-radius: 7px;
+    border-radius: 0px;
     border: 1px solid $border_strong;
 }
 QSlider::handle:horizontal:hover {
@@ -486,7 +490,7 @@ QScrollBar:vertical {
 QScrollBar::handle:vertical {
     background-color: $border_strong;
     min-height: 28px;
-    border-radius: 4px;
+    border-radius: 0px;
     margin: 0px 2px;
 }
 QScrollBar::handle:vertical:hover {
@@ -507,7 +511,7 @@ QScrollBar:horizontal {
 QScrollBar::handle:horizontal {
     background-color: $border_strong;
     min-width: 28px;
-    border-radius: 4px;
+    border-radius: 0px;
     margin: 2px 0px;
 }
 QScrollBar::handle:horizontal:hover {

@@ -1,9 +1,11 @@
 """Design tokens for the pixnex user interface.
 
 Everything visual lives here so that every window shares exactly one palette,
-one spacing rhythm, one type scale and one set of corner radii.  Widget code
-must never hard-code a colour, font size or pixel gap – import from this module
-(or better: use :mod:`colorPickerPro.ui.components`) instead.
+one spacing rhythm, one type scale and one corner-radius scale.  That scale is
+fully squared off (all radii are 0): the pixnex skin uses sharp 90° corners
+everywhere.  Widget code must never hard-code a colour, font size or pixel gap –
+import from this module (or better: use :mod:`colorPickerPro.ui.components`)
+instead.
 
 The palette is a neutral dark theme: it keeps the chrome quiet so that colour
 judgement in the picker / filters is not biased by a colourful interface.
@@ -34,10 +36,18 @@ class Spacing:
 
 @dataclass(frozen=True)
 class Radius:
-    sm: int = 3
-    md: int = 5
-    lg: int = 8
-    xl: int = 12
+    """Corner radii – the pixnex skin is fully squared off.
+
+    Every step is deliberately zero: cards, buttons, inputs, menus, badges,
+    scroll bars and self-painted panels all use 90° corners.  The four steps
+    are kept so call sites stay semantic, and so a future softer skin could be
+    reintroduced from this single place.
+    """
+
+    sm: int = 0
+    md: int = 0
+    lg: int = 0
+    xl: int = 0
 
 
 @dataclass(frozen=True)

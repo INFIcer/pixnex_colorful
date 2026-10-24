@@ -1,7 +1,7 @@
 """全屏取色覆盖层：屏幕截图 + 放大镜 + 颜色读数。
 
 交互行为保持不变：全屏覆盖、放大镜跟随光标、左键取色、右键/ESC 取消。
-表现层改为使用统一设计令牌（颜色/字体/圆角），并保证放大镜与读数面板
+表现层改为使用统一设计令牌（颜色/字体/间距），并保证放大镜与读数面板
 在靠近屏幕边缘时仍被夹紧在屏幕内。
 """
 
@@ -11,7 +11,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QWidget
 
-from .ui.tokens import RADIUS, SPACE, TYPE, qcolor
+from .ui.tokens import SPACE, TYPE, qcolor
 
 # 取色覆盖层操作提示（尺寸测量与绘制共用同一份文案）。
 HINT_TEXT = "左键取色 · 右键取消"
@@ -192,7 +192,7 @@ class _PickerOverlay(QWidget):
         border = qcolor("border_strong")
         painter.setPen(QPen(border, 1))
         painter.setBrush(panel_bg)
-        painter.drawRoundedRect(panel, RADIUS.md, RADIUS.md)
+        painter.drawRect(panel)
 
         swatch_size = min(swatch_size, panel.height() - panel_pad * 2)
         swatch_y = panel.top() + (panel.height() - swatch_size) // 2
@@ -200,7 +200,7 @@ class _PickerOverlay(QWidget):
                             swatch_size, swatch_size)
         painter.setPen(QPen(border, 1))
         painter.setBrush(color)
-        painter.drawRoundedRect(swatch_rect, RADIUS.sm, RADIUS.sm)
+        painter.drawRect(swatch_rect)
 
         text_x = swatch_rect.right() + 1 + SPACE.sm
         top = panel.top() + panel_pad

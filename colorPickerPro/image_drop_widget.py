@@ -1,6 +1,6 @@
 """图像拖放区：拖入文件 / 拖入图像 / Ctrl+V 粘贴，都可读取图像。
 
-外观完全自绘（虚线圆角边框 + 面板底色 + 拖拽高亮），颜色、圆角、字号全部来自
+外观完全自绘（虚线直角边框 + 面板底色 + 拖拽高亮），颜色、间距、字号全部来自
 设计令牌，本文件不写内联样式表。``dragActive`` 是动态属性：拖拽进入时置为
 True 并 repolish，样式表 / 自绘都能据此切换高亮态。
 """
@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from .ui.components import CaptionLabel, SubtitleLabel, TitleLabel
 from .ui.theme import ensure_theme, repolish
-from .ui.tokens import RADIUS, SPACE, TYPE, qcolor
+from .ui.tokens import SPACE, TYPE, qcolor
 
 
 def _soft_accent() -> QColor:
@@ -143,7 +143,7 @@ class ImageDropWidget(QWidget):
                        else qcolor("border_strong"), 1)
         pen.setStyle(Qt.PenStyle.DashLine)
         painter.setPen(pen)
-        painter.drawRoundedRect(outer, RADIUS.lg, RADIUS.lg)
+        painter.drawRect(outer)
 
         inner = outer.adjusted(SPACE.sm, SPACE.sm, -SPACE.sm, -SPACE.sm)
         if not self._pixmap.isNull() and inner.width() > 0 and inner.height() > 0:

@@ -5,6 +5,7 @@
 ## 1. 目标
 
 1. **统一外观**：所有顶层窗口都是自绘无边框窗口（自绘标题栏、1px 方角边框），不使用系统标题栏；一套设计令牌 + 一份全局 QSS。主窗口不提供最大化，改为「置顶」按钮。
+   全局采用尖角（直角）外观：`RADIUS.sm/md/lg/xl` 全部为 0，卡片、按钮、输入框、菜单、标签、滚动条与自绘面板都不得出现圆角。
 2. **图标资产化**：所有图标使用 SVG 资产，禁止字符图标/emoji。
 3. **布局自适应**：只用 Qt 布局管理器；窗口缩放、DPI 缩放时不越界/重叠/裁切；间距保持紧凑（页边距 8、卡片间距 6）。
 4. **单一职责 + 组合复用**：基础控件在 `colorPickerPro/ui/components/`，业务窗口只做组合。
@@ -66,8 +67,8 @@ apply_theme(app)                 # 必须在任何窗口创建前
 | `DangerButton` / `GhostButton` | 危险操作 / 轻量操作 |
 | `IconButton("close")` | 28×28 SVG 图标按钮（close/minimize/maximize/restore/play/pause/settings/add/refresh/flip-h/flip-v） |
 | `MenuButton` / `BaseButton.set_icon(name)` | 带菜单的按钮 / 文本按钮加图标 |
-| `Card(title)` | 圆角面板：`add` / `add_layout` / `add_header_widget` |
-| `Divider` / `ColorSwatch` / `Badge` | 分隔线 / 颜色块 / 胶囊标签 |
+| `Card(title)` | 方角面板：`add` / `add_layout` / `add_header_widget` |
+| `Divider` / `ColorSwatch` / `Badge` | 分隔线 / 颜色块 / 方角标签 |
 | `hbox` / `vbox` / `flow` | 布局构造器（`None` 表示 stretch） |
 | `ScrollArea` / `FlowLayout` | 滚动区 / 自动换行布局 |
 | `ThemedDialog` | 无边框对话框外壳（标题栏 / body / footer / 可滚动 body） |

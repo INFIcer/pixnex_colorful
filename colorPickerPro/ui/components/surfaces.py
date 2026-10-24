@@ -8,12 +8,12 @@ from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from ..tokens import RADIUS, SIZE, SPACE, qcolor
+from ..tokens import SIZE, SPACE, qcolor
 from .text import SectionTitle
 
 
 class Card(QFrame):
-    """A rounded panel with an optional section title and header actions.
+    """A square-cornered panel with an optional section title and header actions.
 
     Usage::
 
@@ -93,7 +93,7 @@ class Divider(QFrame):
 
 
 class ColorSwatch(QWidget):
-    """Rounded colour preview; the only widget allowed to paint a raw colour."""
+    """Colour preview block; the only widget allowed to paint a raw colour."""
 
     def __init__(self, color: QColor | None = None, parent: QWidget | None = None):
         super().__init__(parent)
@@ -122,11 +122,11 @@ class ColorSwatch(QWidget):
             painter.setBrush(qcolor("input"))
         pen = QPen(border, 1)
         painter.setPen(pen)
-        painter.drawRoundedRect(rect, RADIUS.md, RADIUS.md)
+        painter.drawRect(rect)
 
 
 class Badge(QLabel):
-    """Compact pill label for counts / modes."""
+    """Compact square label for counts / modes."""
 
     def __init__(self, text: str = "", parent: QWidget | None = None):
         super().__init__(text, parent)

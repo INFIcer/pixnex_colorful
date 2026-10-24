@@ -17,7 +17,7 @@ from typing import List
 
 from .shader_engine import ShaderEngine, GLSL_COMMON
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QPainter, QColor, QPen, QPixmap, QImage
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QSlider, QDoubleSpinBox,
@@ -33,7 +33,7 @@ from .ui.components import (
     ColorSwatch, FieldLabel, MonoLabel, SecondaryButton, get_open_file_name,
     hbox, vbox,
 )
-from .ui.tokens import RADIUS, SPACE, qcolor
+from .ui.tokens import SPACE, qcolor
 
 
 # ============================================================
@@ -1313,20 +1313,19 @@ class _RangeSlider(QWidget):
         hi = self._x_from_val(self._param.high)
         hr = self.HANDLE_R
 
-        # 轨道 / 已选区间 / 滑块的颜色全部取自设计令牌
+        # 轨道 / 已选区间 / 滑块的颜色全部取自设计令牌；直角外观与全局样式一致
         p.setPen(Qt.NoPen)
         p.setBrush(qcolor("border"))
-        p.drawRoundedRect(hr * 2, yc - 2, w - hr * 4, 4, 2, 2)
+        p.drawRect(QRectF(hr * 2, yc - 2, w - hr * 4, 4))
 
         if hi > lo:
             p.setBrush(qcolor("accent"))
-            p.drawRoundedRect(lo, yc - 2, hi - lo, 4, 2, 2)
+            p.drawRect(QRectF(lo, yc - 2, hi - lo, 4))
 
         for cx, active in [(lo, self._dragging == 0), (hi, self._dragging == 1)]:
             p.setBrush(qcolor("text") if active else qcolor("text_muted"))
             p.setPen(QPen(qcolor("border_strong"), 1.2))
-            p.drawRoundedRect(cx - hr, yc - hr, hr * 2, hr * 2,
-                              RADIUS.sm, RADIUS.sm)
+            p.drawRect(QRectF(cx - hr, yc - hr, hr * 2, hr * 2))
 
     def mousePressEvent(self, e):
         x = e.position().x()

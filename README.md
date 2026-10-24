@@ -119,12 +119,12 @@
 ## 打包
 
 ```
-build.bat                     # 一键打包，产物 dist\pixnex\pixnex.exe
+build.bat                     # 一键打包，产物 dist\pixnex.exe（单文件）
 ```
 
-使用 **onedir** 模式（不是 onefile）：onefile 的引导程序启动时要先把整包解压到 `%TEMP%\_MEIxxxxxx`，一旦系统临时目录不可写或被安全软件拦截，就会在任何 Python 代码运行前弹出 `Could not create temporary directory!`。onedir 直接从目录运行，不依赖临时目录，启动也更快。
+使用 **onefile（单文件）** 模式：产物就是 `dist\pixnex.exe` 一个文件。引导程序每次启动都要先把整包解压到 `%TEMP%\_MEIxxxxxx`（退出时自动清理），所以首次启动比 onedir 慢 1~2 秒；如果系统临时目录不可写或被安全软件拦截，会在任何 Python 代码运行前弹出 `Could not create temporary directory!`，此时把 `pixnex.spec` 末尾 EXE 的 `runtime_tmpdir=None` 改成 `runtime_tmpdir='.'`（解压到 exe 所在目录）或一个确定可写的绝对路径即可。
 
-分发时请把整个 `dist\pixnex\` 文件夹一起拷贝（不是只拷 exe）。
+分发时只拷 `dist\pixnex.exe` 这一个文件。
 
 ---
 

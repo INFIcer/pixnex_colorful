@@ -2,17 +2,21 @@
 #
 # pixnex 打包配置（PyInstaller）
 # ==============================
-# 使用 onedir（目录）模式，而不是 onefile：
-#   onefile 的引导程序启动时必须先把整个包解压到 %TEMP%\_MEIxxxxxx，
-#   一旦系统临时目录不可写/被安全软件拦截，就会在任何 Python 代码运行之前
-#   弹出原生错误框 “Could not create temporary directory!”。
-#   onedir 直接从 dist\pixnex\ 目录运行，不需要临时目录，启动也更快。
+# 使用 onefile（单文件）模式：
+#   产物只有 dist\pixnex.exe 一个文件，分发时只拷这一个 exe 即可。
 #
-# 产物：dist\pixnex\pixnex.exe（分发时整个 dist\pixnex 文件夹一起给）
+#   代价：引导程序每次启动都会先把整包解压到临时目录（默认
+#   %TEMP%\_MEIxxxxxx，退出时自动清理），所以首次启动比之前的 onedir
+#   模式慢 1~2 秒；如果系统临时目录不可写、或被安全软件拦截，会在任何
+#   Python 代码运行之前弹出原生错误框 “Could not create temporary directory!”。
+#   真遇到这种情况，把下面 EXE 里的 runtime_tmpdir=None 改成
+#   runtime_tmpdir='.'（解压到 exe 所在目录）或一个确定可写的绝对路径。
 #
-# 如果确实需要单文件 exe，把文件末尾 EXE 的 exclude_binaries 去掉、把
-# a.binaries / a.datas 移回 EXE，并给 EXE 加 runtime_tmpdir（换成一个确定可写
-# 的目录，例如 exe 所在目录相对路径 '.'），同时去掉 COLLECT。
+# 现有代码在两种模式下都成立，无需改动：
+#   colorPickerPro\main.py           用 sys._MEIPASS 定位 PySide6 插件
+#   colorPickerPro\sync\udm_brush_link.py  用 sys.executable 所在目录找 config.ini
+#   ui\icons.py / ui\stylesheet.py   用 __file__ 定位 assets 图标
+# onefile 下 sys._MEIPASS 与 __file__ 都指向临时解压目录，datas 照常可见。
 import os
 import sys
 from pathlib import Path
@@ -132,17 +136,22 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# 单文件模式：binaries / datas 直接进 EXE，不再有 exclude_binaries 和 COLLECT。
+# runtime_tmpdir=None → 解压到系统临时目录（默认行为）。
+# 若目标机器临时目录不可写，改成 runtime_tmpdir='.' 或确定可写的绝对路径。
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='pixnex',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
     upx_exclude=[],
+    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -150,14 +159,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='pixnex.ico',
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name='pixnex',
 )

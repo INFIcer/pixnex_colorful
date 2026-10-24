@@ -17,7 +17,7 @@ set "DIST=dist"
 set "LOG=%TEMP%\pixnex-build.log"
 
 echo ========================================
-echo  pixnex - PyInstaller onedir Build
+echo  pixnex - PyInstaller onefile Build
 echo ========================================
 echo.
 
@@ -60,19 +60,28 @@ if errorlevel 1 (
 )
 
 echo [3/3] Verifying output...
-if not exist "%DIST%\pixnex\pixnex.exe" (
-    echo [FAIL] %DIST%\pixnex\pixnex.exe not found.
+if not exist "%DIST%\pixnex.exe" (
+    echo [FAIL] %DIST%\pixnex.exe not found.
     echo Full log: %LOG%
     pause
     exit /b 1
 )
 
-for %%I in ("%DIST%\pixnex\pixnex.exe") do echo   OK - %DIST%\pixnex\pixnex.exe  (%%~zI bytes)
+rem Single-file build must not leave a sibling onedir folder behind.
+if exist "%DIST%\pixnex\pixnex.exe" (
+    echo [WARN] Unexpected onedir output found: %DIST%\pixnex\pixnex.exe
+    echo        The spec should be onefile - check pixnex.spec.
+)
+
+for %%I in ("%DIST%\pixnex.exe") do echo   OK - %DIST%\pixnex.exe  (%%~zI bytes)
 
 echo ========================================
 echo  Build Complete!
-echo  Output: %DIST%\pixnex\pixnex.exe
-echo  NOTE: copy the whole %DIST%\pixnex folder when distributing.
+echo  Output: %DIST%\pixnex.exe  (single file)
+echo  NOTE: distribute this one exe only - no folder needed.
+echo        First launch unpacks to %%TEMP%%\_MEIxxxxxx and is slower;
+echo        if that fails with "Could not create temporary directory!",
+echo        set runtime_tmpdir in pixnex.spec (see the header comments).
 echo ========================================
 echo.
 popd

@@ -27,6 +27,7 @@ if str(ROOT) not in sys.path:
 from PySide6.QtCore import QPoint, QRect, QSettings, QSize, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from colorPickerPro.auto_collapse import AUTO_COLLAPSE_DELAY_MS  # noqa: E402
 from colorPickerPro.ui.tokens import SIZE  # noqa: E402
 from colorPickerPro.window_state import (  # noqa: E402
     WindowState,
@@ -93,12 +94,13 @@ def _shown_window(store: WindowStateStore | None = None,
 
 
 _OUTSIDE = QPoint(-99999, -99999)
+_DELAY_S = AUTO_COLLAPSE_DELAY_MS / 1000.0
 
 
 def _fold_now(win) -> None:
-    """驱动自动折叠：先记录「离开窗口」，再跨过 1 秒延迟。"""
+    """驱动自动折叠：先记录「离开窗口」，再跨过配置的折叠延迟。"""
     win._auto_collapse_step(_OUTSIDE, now=0.0)
-    win._auto_collapse_step(_OUTSIDE, now=2.0)
+    win._auto_collapse_step(_OUTSIDE, now=_DELAY_S + 0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -112,8 +114,10 @@ def test_memory_store_defaults():
 
 def test_memory_store_roundtrip():
     store = WindowStateStore()
-    saved = WindowState(auto_collapse=True, always_on_top=True,
-                        geometry=(10, 20, 430, 710))
+    saved = WindowState(
+        auto_collapse=True, always_on_top=True, geometry=(10, 20, 430, 710),
+        model="HSV", color=(12, 34, 56), sync_mode="udm",
+        sync_enabled=True, focus_return=False)
     store.save(saved)
     assert store.load() == saved
 
@@ -129,8 +133,10 @@ def test_ini_store_roundtrip():
     path = Path(tempfile.mkdtemp(prefix="pixnex-state-")) / "state.ini"
     first = WindowStateStore(QSettings(str(path), QSettings.Format.IniFormat))
     assert first.load() == WindowState()
-    saved = WindowState(auto_collapse=True, always_on_top=False,
-                        geometry=(140, 160, 420, 700))
+    saved = WindowState(
+        auto_collapse=True, always_on_top=False, geometry=(140, 160, 420, 700),
+        model="CIE Lab", color=(12, 34, 56), sync_mode="ps",
+        sync_enabled=True, focus_return=False)
     first.save(saved)
     # 用新的 QSettings 实例重新读磁盘：确认真的落盘而不是留在缓存里。
     second = WindowStateStore(QSettings(str(path), QSettings.Format.IniFormat))
@@ -152,6 +158,29 @@ def test_geometry_none_clears_saved_position():
     store.save(WindowState(geometry=(10, 20, 430, 710)))
     store.save(WindowState())
     assert store.load() == WindowState()
+
+
+def test_settings_defaults_and_color_none_clear():
+    store = _temp_store()
+    store.save(WindowState(model="HSV", color=(1, 2, 3),
+                           sync_mode="udm", sync_enabled=True,
+                           focus_return=False))
+    store.save(WindowState())
+    state = store.load()
+    assert state == WindowState(), state
+    assert state.model == "OKLCH"
+    assert state.color is None
+    assert state.sync_mode == "off"
+    assert state.sync_enabled is False
+    assert state.focus_return is True
+
+
+def test_load_clamps_invalid_color_channels():
+    store = _temp_store()
+    store._settings.setValue("settings/color_r", 300)
+    store._settings.setValue("settings/color_g", -20)
+    store._settings.setValue("settings/color_b", 40)
+    assert store.load().color == (255, 0, 40)
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +255,94 @@ def test_main_window_defaults_without_saved_state():
         assert win._auto_collapse_timer.isActive() is False
 
 
+def test_main_window_restores_saved_color_settings():
+    store = _temp_store()
+    store.save(WindowState(model="HSV", color=(12, 34, 56)))
+    with _shown_window(store) as win:
+        assert win._combo.currentText() == "HSV", win._combo.currentText()
+        assert type(win._model).__name__ == "HSVModel", type(win._model).__name__
+        r, g, b = win._model.to_srgb_tuple()
+        assert abs(round(r * 255) - 12) <= 1, (r, g, b)
+        assert abs(round(g * 255) - 34) <= 1, (r, g, b)
+        assert abs(round(b * 255) - 56) <= 1, (r, g, b)
+
+
+def test_restoring_saved_model_keeps_single_model_listener():
+    """启动时切换模型不能把 _on_model_sync 注册两次（否则同步/焦点会重复）。"""
+    store = _temp_store()
+    store.save(WindowState(model="HSV", color=(10, 20, 30)))
+    with _shown_window(store) as win:
+        listeners = win._model._listeners
+        assert listeners.count(win._on_model_sync) == 1, listeners
+
+
+def test_main_window_restores_saved_sync_settings():
+    store = _temp_store()
+    store.save(WindowState(sync_mode="udm", focus_return=False))
+    with _shown_window(store) as win:
+        assert win._sync_combo.currentData() == "udm"
+        assert win._sync_mode == "udm"
+        assert win._sync_enabled is False, "上次关闭时未开启同步，不应自行开启"
+        assert win._focus_chk.isChecked() is False
+        assert win._focus_return_enabled is False
+
+
+def test_main_window_restores_sync_enabled():
+    store = _temp_store()
+    store.save(WindowState(sync_mode="udm", sync_enabled=True))
+    with _shown_window(store) as win:
+        assert win._sync_mode == "udm"
+        assert win._sync_enabled is True, "上次关闭时同步开着，重启应恢复"
+        assert win._sync_btn.text() == "关闭同步"
+
+
+def test_main_window_ignores_invalid_saved_settings():
+    store = _temp_store()
+    store.save(WindowState(model="NOPE", sync_mode="bogus",
+                           color=(300, -20, 40)))
+    with _shown_window(store) as win:
+        assert win._combo.currentText() == "OKLCH", win._combo.currentText()
+        assert win._sync_combo.currentData() == "off"
+        r, g, b = win._model.to_srgb_tuple()
+        assert round(r * 255) == 255, (r, g, b)
+        assert round(g * 255) == 0, (r, g, b)
+        assert abs(round(b * 255) - 40) <= 1, (r, g, b)
+
+
+def test_close_saves_color_and_sync_settings():
+    store = _temp_store()
+    with _shown_window(store) as win:
+        win._combo.setCurrentText("CIE Lab")
+        _app().processEvents()
+        win._model.set_from_srgb(12 / 255.0, 34 / 255.0, 56 / 255.0)
+        _app().processEvents()
+        win._sync_combo.setCurrentIndex(win._sync_combo.findData("udm"))
+        _app().processEvents()
+        win._focus_chk.setChecked(False)
+        _app().processEvents()
+    saved = store.load()
+    assert saved.model == "CIE Lab", saved.model
+    assert saved.sync_mode == "udm", saved.sync_mode
+    assert saved.sync_enabled is False, saved.sync_enabled
+    assert saved.focus_return is False, saved.focus_return
+    assert saved.color is not None, saved.color
+    for actual, expected in zip(saved.color, (12, 34, 56)):
+        assert abs(actual - expected) <= 2, (saved.color, (12, 34, 56))
+
+
+def test_close_saves_sync_enabled_flag():
+    store = _temp_store()
+    with _shown_window(store) as win:
+        win._sync_combo.setCurrentIndex(win._sync_combo.findData("udm"))
+        _app().processEvents()
+        win._on_sync_toggle()          # 开启同步（UDM 未运行也不会写目标进程）
+        _app().processEvents()
+        assert win._sync_enabled is True
+    saved = store.load()
+    assert saved.sync_mode == "udm", saved.sync_mode
+    assert saved.sync_enabled is True, saved.sync_enabled
+
+
 def test_main_window_restores_clamped_geometry():
     store = _temp_store()
     store.save(WindowState(geometry=(-5000, -5000, 430, 710)))
@@ -297,29 +414,31 @@ def test_auto_collapse_folds_and_restores():
             "_shown_window 已停掉定时器，测试里不应重新启动")
 
 
-def test_auto_collapse_waits_one_second_before_folding():
+def test_auto_collapse_waits_configured_delay_before_folding():
     store = _temp_store()
     store.save(WindowState(auto_collapse=True, geometry=(150, 150, 400, 660)))
     with _shown_window(store) as win:
         inside = win.geometry().center()
         win._auto_collapse_step(_OUTSIDE, now=100.0)
         assert not win.is_collapsed(), "刚离开窗口不应立即折叠"
-        win._auto_collapse_step(_OUTSIDE, now=100.9)
-        assert not win.is_collapsed(), "离开不足 1 秒不应折叠"
+        win._auto_collapse_step(_OUTSIDE, now=100.0 + _DELAY_S * 0.9)
+        assert not win.is_collapsed(), "离开不足延迟时间不应折叠"
 
-        # 1 秒内回到窗口：取消等待，不折叠
-        win._auto_collapse_step(inside, now=100.95)
+        # 延迟时间内回到窗口：取消等待，不折叠
+        win._auto_collapse_step(inside, now=100.0 + _DELAY_S * 0.95)
         assert not win.is_collapsed()
 
         # 再次离开：重新从这一刻开始计时
-        win._auto_collapse_step(_OUTSIDE, now=101.0)
-        win._auto_collapse_step(_OUTSIDE, now=101.9)
-        assert not win.is_collapsed(), "重新离开后不足 1 秒不应折叠"
-        win._auto_collapse_step(_OUTSIDE, now=102.01)
-        assert win.is_collapsed(), "离开超过 1 秒应折叠"
+        restart = 200.0
+        win._auto_collapse_step(_OUTSIDE, now=restart)
+        win._auto_collapse_step(_OUTSIDE, now=restart + _DELAY_S * 0.9)
+        assert not win.is_collapsed(), "重新离开后不足延迟时间不应折叠"
+        win._auto_collapse_step(_OUTSIDE, now=restart + _DELAY_S + 0.01)
+        assert win.is_collapsed(), "离开超过延迟时间应折叠"
 
         # 展开不延迟：回到窗口立即展开
-        win._auto_collapse_step(win.geometry().center(), now=102.02)
+        win._auto_collapse_step(win.geometry().center(),
+                                now=restart + _DELAY_S + 0.02)
         assert not win.is_collapsed(), "展开应立即生效"
 
 
@@ -514,6 +633,8 @@ def _main() -> int:
         test_ini_store_roundtrip,
         test_ini_store_ignores_broken_geometry,
         test_geometry_none_clears_saved_position,
+        test_settings_defaults_and_color_none_clear,
+        test_load_clamps_invalid_color_channels,
         test_clamp_geometry_keeps_inside_rect_untouched,
         test_clamp_geometry_moves_offscreen_window_back,
         test_clamp_geometry_shrinks_oversized_window,
@@ -521,11 +642,18 @@ def _main() -> int:
         test_clamp_geometry_requires_min_size,
         test_main_window_restores_saved_state,
         test_main_window_defaults_without_saved_state,
+        test_main_window_restores_saved_color_settings,
+        test_restoring_saved_model_keeps_single_model_listener,
+        test_main_window_restores_saved_sync_settings,
+        test_main_window_restores_sync_enabled,
+        test_main_window_ignores_invalid_saved_settings,
+        test_close_saves_color_and_sync_settings,
+        test_close_saves_sync_enabled_flag,
         test_main_window_restores_clamped_geometry,
         test_close_saves_geometry_and_toggles,
         test_close_while_collapsed_saves_expanded_geometry,
         test_auto_collapse_folds_and_restores,
-        test_auto_collapse_waits_one_second_before_folding,
+        test_auto_collapse_waits_configured_delay_before_folding,
         test_auto_collapse_disabled_never_folds,
         test_turning_auto_collapse_off_expands,
         test_manual_toggle_collapse_keeps_position,

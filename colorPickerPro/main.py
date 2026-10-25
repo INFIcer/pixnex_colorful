@@ -22,8 +22,8 @@ from PySide6.QtWidgets import (
 )
 
 from .auto_collapse import (
-    AUTO_COLLAPSE_POLL_MS, CollapseDelay, modal_or_popup_open,
-    mouse_button_pressed,
+    AUTO_COLLAPSE_DELAY_MS, AUTO_COLLAPSE_POLL_MS, CollapseDelay,
+    modal_or_popup_open, mouse_button_pressed,
 )
 from .color_picker_widgets import (
     ALL_MODELS,
@@ -85,14 +85,15 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         self.setMinimumSize(320, 460)
         self.resize(380, 640)
 
-        # 界面状态（自动折叠 / 置顶 / 位置尺寸）。不传存储时只在内存里记，
-        # 测试和预览不会写用户的真实配置；正式启动由 main() 注入持久化存储。
+        # 界面状态 / 用户设置（自动折叠、置顶、位置尺寸、颜色模型与颜色、
+        # 同步设置）。不传存储时只在内存里记，测试和预览不会写用户的真实配置；
+        # 正式启动由 main() 注入持久化存储。
         self._state_store = (
             state_store if state_store is not None else WindowStateStore())
-        saved_state = self._state_store.load()
-        self._always_on_top = saved_state.always_on_top
-        self._auto_collapse_enabled = saved_state.auto_collapse
-        self._saved_geometry = saved_state.geometry
+        self._saved_state = self._state_store.load()
+        self._always_on_top = self._saved_state.always_on_top
+        self._auto_collapse_enabled = self._saved_state.auto_collapse
+        self._saved_geometry = self._saved_state.geometry
         # 折叠相关：折叠标记、展开后的尺寸与最小高度（折叠只改高度，宽度保留）。
         self._collapsed = False
         self._expanded_size: QSize | None = None
@@ -129,10 +130,13 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
 
         self._build_ui()
         self._restore_window_geometry()
+        self._restore_saved_settings()
         # 主窗口必须监听自己的模型：否则首次切换模型之前，取色变化既不会
         # 推送到同步软件，也不会触发焦点归还。
         self._model.add_listener(self._on_model_sync)
         self._sync.start()
+        # 「上次关闭时同步是开启的」要在控制器线程启动之后再恢复。
+        self._restore_sync_enabled()
 
     # ------------------------------------------------------------------
     # 界面
@@ -152,7 +156,9 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
 
         # 标题栏按钮：自动折叠 / 置顶（都在最小化左边）。
         self._auto_collapse_btn = IconButton(
-            "collapse", tooltip="鼠标离开后折叠为标题栏", checkable=True)
+            "collapse", checkable=True,
+            tooltip=(f"鼠标离开 {AUTO_COLLAPSE_DELAY_MS / 1000:g} 秒后"
+                     "折叠为标题栏"))
         self._auto_collapse_btn.setChecked(self._auto_collapse_enabled)
         self._auto_collapse_btn.toggled.connect(self._on_auto_collapse_toggled)
         self.title_bar.add_button(self._auto_collapse_btn)
@@ -278,6 +284,38 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
             QSize(self.minimumWidth(), self.minimumHeight()))
         self.setGeometry(target)
 
+    def _restore_saved_settings(self) -> None:
+        """恢复色彩模型、当前颜色、同步软件与「选色后归还焦点」勾选。
+
+        在界面构建完成后、颜色模型监听器注册之前调用，因此这里设置颜色不会
+        触发颜色同步 / 焦点归还。
+        """
+        saved = self._saved_state
+
+        # 色彩模型：未知名字回退 OKLCH。切换模型会保留旧颜色，随后再用保存的
+        # 颜色覆盖。
+        model_name = saved.model if saved.model in ALL_MODELS else "OKLCH"
+        if self._combo.currentText() != model_name:
+            self._combo.setCurrentText(model_name)
+        if saved.color is not None:
+            r, g, b = (max(0, min(255, int(value))) for value in saved.color)
+            self._model.set_from_srgb(r / 255.0, g / 255.0, b / 255.0)
+
+        # 同步目标软件：未知值回退「关闭」。
+        mode = saved.sync_mode
+        mode = mode if mode in ("off", "udm", "ps") else "off"
+        index = self._sync_combo.findData(mode)
+        if index >= 0:
+            self._sync_combo.setCurrentIndex(index)
+
+        self._focus_chk.setChecked(bool(saved.focus_return))
+
+    def _restore_sync_enabled(self) -> None:
+        """恢复「上次关闭时同步开着」：按正常开启流程重新连接并推送颜色。"""
+        if not self._saved_state.sync_enabled or self._sync_mode == "off":
+            return
+        self._on_sync_toggle()
+
     def _persist_geometry(self) -> QRect:
         """要保存的窗口矩形：折叠时用展开后的尺寸，避免重启后只剩标题栏。"""
         if self._collapsed and self._expanded_size is not None:
@@ -287,12 +325,18 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         return self.geometry()
 
     def _save_window_state(self) -> None:
-        """保存自动折叠 / 置顶 / 位置尺寸；切换开关与退出时调用。"""
+        """保存窗口状态与用户设置；切换开关与退出时调用。"""
         rect = self._persist_geometry()
+        r, g, b = self._model.to_srgb_tuple()
         self._state_store.save(WindowState(
             auto_collapse=self._auto_collapse_enabled,
             always_on_top=self._always_on_top,
             geometry=(rect.x(), rect.y(), rect.width(), rect.height()),
+            model=self._combo.currentText(),
+            color=(round(r * 255), round(g * 255), round(b * 255)),
+            sync_mode=self._sync_mode,
+            sync_enabled=self._sync_enabled,
+            focus_return=self._focus_chk.isChecked(),
         ))
 
     def is_collapsed(self) -> bool:
@@ -404,16 +448,17 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
     # ------------------------------------------------------------------
     def _on_model_switch(self, name):
         old_rgb = self._model.to_srgb_tuple()
-        self._model.remove_listener(self._on_model_sync)
+        # 启动恢复设置时可能还没注册主窗口监听器：只在原本已注册时才迁移，
+        # 避免 __init__ 末尾再注册一次造成重复回调。
+        had_sync_listener = self._model.remove_listener(self._on_model_sync)
         self._model = ALL_MODELS[name]()
         self._model.set_from_srgb(old_rgb[0], old_rgb[1], old_rgb[2])
 
         self._graph.set_model(self._model)
         self._slider_widget.set_model(self._model)
         self._info_panel.set_model(self._model)
-        self._model.add_listener(self._on_model_sync)
-
-        self._graph_hint.setText("拖动取色")
+        if had_sync_listener:
+            self._model.add_listener(self._on_model_sync)
 
     def _set_always_on_top(self, enabled: bool) -> None:
         """切换主窗口置顶（标题栏图钉按钮）。

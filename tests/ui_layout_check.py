@@ -891,6 +891,7 @@ def _run_functional_checks(fixtures: Fixtures,
     def check_screen_filter_auto_collapse() -> None:
         from PySide6.QtCore import QPoint
         from colorPickerPro import screenFilter as screen_filter_module
+        from colorPickerPro.auto_collapse import AUTO_COLLAPSE_DELAY_MS
         from colorPickerPro.screenFilter import ScreenFilterWindow
         from colorPickerPro.ui.tokens import SIZE
 
@@ -908,17 +909,18 @@ def _run_functional_checks(fixtures: Fixtures,
             QApplication.processEvents()
             win._auto_collapse_timer.stop()   # 手动驱动，避免真实光标干扰
             outside = QPoint(-99999, -99999)
+            delay_s = AUTO_COLLAPSE_DELAY_MS / 1000.0
             win._auto_collapse_step(outside, now=0.0)
             assert not win.is_collapsed(), (
-                "屏幕滤镜窗口：离开不足 1 秒就折叠了（应延迟折叠）")
-            win._auto_collapse_step(outside, now=1.2)
+                "屏幕滤镜窗口：离开不足折叠延迟就折叠了（应延迟折叠）")
+            win._auto_collapse_step(outside, now=delay_s + 0.2)
             QApplication.processEvents()
             harness.settle(win)
-            assert win.is_collapsed(), "鼠标离开超过 1 秒后屏幕滤镜窗口没有折叠"
+            assert win.is_collapsed(), "鼠标离开超过延迟时间后屏幕滤镜窗口没有折叠"
             assert win.height() == SIZE.title_bar_height + 2, (
                 f"折叠后应只剩标题栏，实际高度 {win.height()}")
 
-            win._auto_collapse_step(win.geometry().center(), now=1.21)
+            win._auto_collapse_step(win.geometry().center(), now=delay_s + 0.21)
             QApplication.processEvents()
             harness.settle(win)
             assert not win.is_collapsed(), (
@@ -1216,6 +1218,7 @@ def _run_functional_checks(fixtures: Fixtures,
     def check_auto_collapse() -> None:
         from PySide6.QtCore import QPoint
         from colorPickerPro import main as main_module
+        from colorPickerPro.auto_collapse import AUTO_COLLAPSE_DELAY_MS
         from colorPickerPro.ui.tokens import SIZE
 
         # 真机鼠标按键状态会让「拖拽中不折叠」的保护生效；冒烟测试要确定性，
@@ -1238,18 +1241,19 @@ def _run_functional_checks(fixtures: Fixtures,
             QApplication.processEvents()
             win._auto_collapse_timer.stop()   # 手动驱动，避免真实光标干扰
             outside = QPoint(-99999, -99999)
+            delay_s = AUTO_COLLAPSE_DELAY_MS / 1000.0
             win._auto_collapse_step(outside, now=0.0)
             assert not win.is_collapsed(), (
-                "主窗口：离开不足 1 秒就折叠了（应延迟折叠）")
-            win._auto_collapse_step(outside, now=1.2)
+                "主窗口：离开不足折叠延迟就折叠了（应延迟折叠）")
+            win._auto_collapse_step(outside, now=delay_s + 0.2)
             QApplication.processEvents()
             harness.settle(win)
-            assert win.is_collapsed(), "鼠标离开超过 1 秒后主窗口没有折叠"
+            assert win.is_collapsed(), "鼠标离开超过延迟时间后主窗口没有折叠"
             assert win.height() == SIZE.title_bar_height + 2, (
                 f"折叠后应只剩标题栏，实际高度 {win.height()}")
             assert win._body.isHidden(), "折叠后内容区应隐藏"
 
-            win._auto_collapse_step(win.geometry().center(), now=1.21)
+            win._auto_collapse_step(win.geometry().center(), now=delay_s + 0.21)
             QApplication.processEvents()
             harness.settle(win)
             assert not win.is_collapsed(), "鼠标进入标题栏后主窗口没有立即展开"

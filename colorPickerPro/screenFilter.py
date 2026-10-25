@@ -34,8 +34,8 @@ if __name__ == "__main__" and (__package__ is None or __package__ == ''):
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from colorPickerPro.auto_collapse import (
-        AUTO_COLLAPSE_POLL_MS, CollapseDelay, modal_or_popup_open,
-        mouse_button_pressed,
+        AUTO_COLLAPSE_DELAY_MS, AUTO_COLLAPSE_POLL_MS, CollapseDelay,
+        modal_or_popup_open, mouse_button_pressed,
     )
     from colorPickerPro.filter_lib import ImageFilter, ImageConvert
     from colorPickerPro.customFrame import CustomFramelessWindow, PixmapWidget
@@ -51,8 +51,8 @@ if __name__ == "__main__" and (__package__ is None or __package__ == ''):
     from colorPickerPro.ui.tokens import SPACE, State, qcolor
 else:
     from .auto_collapse import (
-        AUTO_COLLAPSE_POLL_MS, CollapseDelay, modal_or_popup_open,
-        mouse_button_pressed,
+        AUTO_COLLAPSE_DELAY_MS, AUTO_COLLAPSE_POLL_MS, CollapseDelay,
+        modal_or_popup_open, mouse_button_pressed,
     )
     from .filter_lib import ImageFilter, ImageConvert
     from .customFrame import CustomFramelessWindow, PixmapWidget
@@ -185,7 +185,9 @@ class ScreenFilterWindow(CustomFramelessWindow):
     def _build_filter_ui(self):
         # 标题栏按钮：自动折叠 / 暂停捕获 / 滤镜方案。
         self._btn_auto_collapse = IconButton(
-            "collapse", tooltip="鼠标离开后折叠为标题栏", checkable=True)
+            "collapse", checkable=True,
+            tooltip=(f"鼠标离开 {AUTO_COLLAPSE_DELAY_MS / 1000:g} 秒后"
+                     "折叠为标题栏"))
         self._btn_auto_collapse.toggled.connect(self._on_auto_collapse_toggled)
         self.add_title_bar_button(self._btn_auto_collapse)
 

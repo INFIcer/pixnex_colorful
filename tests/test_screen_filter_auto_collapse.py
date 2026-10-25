@@ -24,9 +24,12 @@ if str(ROOT) not in sys.path:
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
+from colorPickerPro.auto_collapse import AUTO_COLLAPSE_DELAY_MS  # noqa: E402
 from colorPickerPro.filter_lib import ImageFilter  # noqa: E402
 from colorPickerPro.filter_scheme import FilterScheme  # noqa: E402
 from colorPickerPro.ui.tokens import SIZE  # noqa: E402
+
+_DELAY_S = AUTO_COLLAPSE_DELAY_MS / 1000.0
 
 _APP = None
 
@@ -87,9 +90,9 @@ def _outside() -> QPoint:
 
 
 def _fold_now(win) -> None:
-    """驱动自动折叠：先记录「离开窗口」，再跨过 1 秒延迟。"""
+    """驱动自动折叠：先记录「离开窗口」，再跨过配置的折叠延迟。"""
     win._auto_collapse_step(_outside(), now=0.0)
-    win._auto_collapse_step(_outside(), now=2.0)
+    win._auto_collapse_step(_outside(), now=_DELAY_S + 0.5)
 
 
 def test_button_defaults_off():
@@ -112,22 +115,24 @@ def test_auto_collapse_folds_and_restores():
 
         win._auto_collapse_step(_outside(), now=0.0)
         assert not win.is_collapsed(), "刚离开不应立即折叠"
-        win._auto_collapse_step(_outside(), now=0.5)
-        assert not win.is_collapsed(), "离开不足 1 秒不应折叠"
+        win._auto_collapse_step(_outside(), now=_DELAY_S * 0.9)
+        assert not win.is_collapsed(), "离开不足延迟时间不应折叠"
 
-        # 1 秒内回到窗口：取消等待
-        win._auto_collapse_step(win.geometry().center(), now=0.6)
+        # 延迟时间内回到窗口：取消等待
+        win._auto_collapse_step(win.geometry().center(),
+                                now=_DELAY_S * 0.95)
         assert not win.is_collapsed()
 
-        # 再次离开并超过 1 秒：折叠
-        win._auto_collapse_step(_outside(), now=1.0)
-        win._auto_collapse_step(_outside(), now=2.01)
-        assert win.is_collapsed(), "鼠标离开超过 1 秒后屏幕滤镜窗口没有折叠"
+        # 再次离开并超过延迟：折叠
+        win._auto_collapse_step(_outside(), now=10.0)
+        win._auto_collapse_step(_outside(), now=10.0 + _DELAY_S + 0.01)
+        assert win.is_collapsed(), "鼠标离开超过延迟时间后屏幕滤镜窗口没有折叠"
         assert win.height() == SIZE.title_bar_height + 2, win.height()
         assert win._content_host.isHidden()
 
         # 展开仍立即生效
-        win._auto_collapse_step(win.geometry().center(), now=2.02)
+        win._auto_collapse_step(win.geometry().center(),
+                                now=10.0 + _DELAY_S + 0.02)
         assert not win.is_collapsed(), "鼠标进入标题栏后屏幕滤镜窗口没有立即展开"
         assert win._content_host.isVisible()
         assert win.size() == size_before, (win.size(), size_before)

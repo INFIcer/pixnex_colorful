@@ -55,9 +55,13 @@ def _hidden(widget: QWidget) -> QWidget:
 
 @contextmanager
 def _filter_window():
+    from colorPickerPro import screenFilter as screen_filter_module
     from colorPickerPro.screenFilter import ScreenFilterWindow
 
     _app()
+    # 测试机上的真实鼠标点击不应干扰自动折叠断言：固定「未按鼠标」。
+    original_guard = screen_filter_module.mouse_button_pressed
+    screen_filter_module.mouse_button_pressed = lambda: False
     win = ScreenFilterWindow(_scheme())
     _hidden(win)
     win._auto_collapse_timer.stop()   # 测试里手动驱动，避免真实光标干扰
@@ -68,6 +72,7 @@ def _filter_window():
         win._auto_collapse_timer.stop()
         win.close()
         win.deleteLater()
+        screen_filter_module.mouse_button_pressed = original_guard
         _app().processEvents()
 
 
@@ -79,6 +84,12 @@ def _enable_auto_collapse(win) -> None:
 
 def _outside() -> QPoint:
     return QPoint(-99999, -99999)
+
+
+def _fold_now(win) -> None:
+    """驱动自动折叠：先记录「离开窗口」，再跨过 1 秒延迟。"""
+    win._auto_collapse_step(_outside(), now=0.0)
+    win._auto_collapse_step(_outside(), now=2.0)
 
 
 def test_button_defaults_off():
@@ -99,13 +110,25 @@ def test_auto_collapse_folds_and_restores():
         _enable_auto_collapse(win)
         assert win._auto_collapse_enabled is True
 
-        win._auto_collapse_step(_outside())
-        assert win.is_collapsed(), "鼠标离开后屏幕滤镜窗口没有折叠"
+        win._auto_collapse_step(_outside(), now=0.0)
+        assert not win.is_collapsed(), "刚离开不应立即折叠"
+        win._auto_collapse_step(_outside(), now=0.5)
+        assert not win.is_collapsed(), "离开不足 1 秒不应折叠"
+
+        # 1 秒内回到窗口：取消等待
+        win._auto_collapse_step(win.geometry().center(), now=0.6)
+        assert not win.is_collapsed()
+
+        # 再次离开并超过 1 秒：折叠
+        win._auto_collapse_step(_outside(), now=1.0)
+        win._auto_collapse_step(_outside(), now=2.01)
+        assert win.is_collapsed(), "鼠标离开超过 1 秒后屏幕滤镜窗口没有折叠"
         assert win.height() == SIZE.title_bar_height + 2, win.height()
         assert win._content_host.isHidden()
 
-        win._auto_collapse_step(win.geometry().center())
-        assert not win.is_collapsed(), "鼠标进入标题栏后屏幕滤镜窗口没有展开"
+        # 展开仍立即生效
+        win._auto_collapse_step(win.geometry().center(), now=2.02)
+        assert not win.is_collapsed(), "鼠标进入标题栏后屏幕滤镜窗口没有立即展开"
         assert win._content_host.isVisible()
         assert win.size() == size_before, (win.size(), size_before)
 
@@ -141,7 +164,7 @@ def test_titlebar_double_click_disables_auto_collapse():
 def test_manual_expand_of_auto_collapsed_window_disables_auto():
     with _filter_window() as win:
         _enable_auto_collapse(win)
-        win._auto_collapse_step(_outside())
+        _fold_now(win)
         assert win.is_collapsed()
         win.toggle_collapse()   # 手动展开
         assert not win.is_collapsed(), "手动展开没有生效"
@@ -152,7 +175,7 @@ def test_manual_expand_of_auto_collapsed_window_disables_auto():
 def test_turning_switch_off_expands_collapsed_window():
     with _filter_window() as win:
         _enable_auto_collapse(win)
-        win._auto_collapse_step(_outside())
+        _fold_now(win)
         assert win.is_collapsed()
         win._btn_auto_collapse.setChecked(False)
         _app().processEvents()

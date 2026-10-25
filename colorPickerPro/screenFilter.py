@@ -34,7 +34,8 @@ if __name__ == "__main__" and (__package__ is None or __package__ == ''):
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from colorPickerPro.auto_collapse import (
-        AUTO_COLLAPSE_POLL_MS, modal_or_popup_open, mouse_button_pressed,
+        AUTO_COLLAPSE_POLL_MS, CollapseDelay, modal_or_popup_open,
+        mouse_button_pressed,
     )
     from colorPickerPro.filter_lib import ImageFilter, ImageConvert
     from colorPickerPro.customFrame import CustomFramelessWindow, PixmapWidget
@@ -50,7 +51,8 @@ if __name__ == "__main__" and (__package__ is None or __package__ == ''):
     from colorPickerPro.ui.tokens import SPACE, State, qcolor
 else:
     from .auto_collapse import (
-        AUTO_COLLAPSE_POLL_MS, modal_or_popup_open, mouse_button_pressed,
+        AUTO_COLLAPSE_POLL_MS, CollapseDelay, modal_or_popup_open,
+        mouse_button_pressed,
     )
     from .filter_lib import ImageFilter, ImageConvert
     from .customFrame import CustomFramelessWindow, PixmapWidget
@@ -155,6 +157,8 @@ class ScreenFilterWindow(CustomFramelessWindow):
         self._auto_collapse_timer = QTimer(self)
         self._auto_collapse_timer.setInterval(AUTO_COLLAPSE_POLL_MS)
         self._auto_collapse_timer.timeout.connect(self._on_auto_collapse_tick)
+        # 鼠标离开后等待约 1 秒才折叠；期间回到窗口则取消等待（展开不延迟）。
+        self._collapse_delay = CollapseDelay()
 
         # 左键取色的反馈：标题栏副标题短暂显示颜色提示，随后自动清除。
         self._pick_hint_timer = QTimer(self)
@@ -205,6 +209,7 @@ class ScreenFilterWindow(CustomFramelessWindow):
 
     def _on_auto_collapse_toggled(self, enabled: bool):
         self._auto_collapse_enabled = bool(enabled)
+        self._collapse_delay.reset()
         self._sync_auto_collapse_timer()
         if not self._auto_collapse_enabled and self._collapsed:
             super().toggle_collapse()   # 关掉开关立即展开，不能留在折叠状态
@@ -218,6 +223,7 @@ class ScreenFilterWindow(CustomFramelessWindow):
         if not self._auto_collapse_enabled:
             return
         self._auto_collapse_enabled = False
+        self._collapse_delay.reset()
         self._sync_auto_collapse_timer()
         button = self._btn_auto_collapse
         if button is not None:
@@ -237,32 +243,43 @@ class ScreenFilterWindow(CustomFramelessWindow):
     def _on_auto_collapse_tick(self):
         self._auto_collapse_step(QCursor.pos())
 
-    def _auto_collapse_step(self, cursor_pos: QPoint):
-        """按光标位置折叠 / 展开。参数显式传入，测试不需要移动真实鼠标。"""
+    def _auto_collapse_step(self, cursor_pos: QPoint,
+                            now: float | None = None):
+        """按光标位置折叠 / 展开：折叠有约 1 秒离开延迟，展开立即执行。
+
+        ``cursor_pos`` / ``now`` 显式传入便于测试（``now`` 为
+        ``time.monotonic()`` 秒数）。
+        """
         if not self._auto_collapse_enabled or not self.isVisible():
+            self._collapse_delay.reset()
             return
         if self.isMinimized() or self.isMaximized():
+            self._collapse_delay.reset()
             return
-        if mouse_button_pressed():
-            return                      # 正在拖拽（移动 / 缩放）
-        if modal_or_popup_open():
-            return                      # 模态对话框 / 弹出层打开时鼠标本来就在窗口外
+        if mouse_button_pressed() or modal_or_popup_open():
+            self._collapse_delay.reset()   # 正在交互：重新计时
+            return
         if self._scheme_panel is not None and self._scheme_panel.isVisible():
-            return                      # 正在编辑方案：面板在窗口外，不算离开
+            self._collapse_delay.reset()   # 正在编辑方案：面板在窗口外不算离开
+            return
         inside = self.geometry().contains(cursor_pos)
         if self._collapsed:
+            self._collapse_delay.reset()
             if inside:
-                super().toggle_collapse()
-        elif not inside:
+                super().toggle_collapse()  # 展开不延迟
+            return
+        if self._collapse_delay.should_collapse(inside, now):
             super().toggle_collapse()
 
     # ---- 窗口显示 / 隐藏 -------------------------------------------------
     def showEvent(self, event):
         super().showEvent(event)
+        self._collapse_delay.reset()
         self._sync_auto_collapse_timer()
 
     def hideEvent(self, event):
         self._auto_collapse_timer.stop()
+        self._collapse_delay.reset()
         super().hideEvent(event)
 
     # ------------------------------------------------------------------

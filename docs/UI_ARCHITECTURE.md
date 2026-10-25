@@ -104,20 +104,20 @@ class MyDialog(ThemedDialog):
   （例如复用的滤镜方案面板）仍可拖边缩放、缩放光标仍正常。
 
 主窗口额外约定：标题栏有「自动折叠 / 置顶（图钉）/ 最小化 / 关闭」，没有最大化；
-置顶切换 `WindowStaysOnTopHint`；自动折叠开启后，鼠标离开主窗口区域就折叠成一条
-标题栏，移入标题栏再展开（折叠高度 = 标题栏 30 + 上下边框 2）。主窗口通过
-`window_state.WindowStateStore` 保存自动折叠、置顶与窗口位置尺寸：`main()` 注入
-`WindowStateStore.persistent()`（INI 文件），测试/预览用默认的内存存储。对话框
-标题栏只有关闭按钮。
+置顶切换 `WindowStaysOnTopHint`；自动折叠开启后，鼠标离开主窗口区域需持续约 1 秒
+才折叠成一条标题栏（1 秒内回到窗口则不折叠），移入标题栏立即展开（折叠高度 =
+标题栏 30 + 上下边框 2）。主窗口通过 `window_state.WindowStateStore` 保存自动折叠、
+置顶与窗口位置尺寸：`main()` 注入 `WindowStateStore.persistent()`（INI 文件），
+测试/预览用默认的内存存储。对话框标题栏只有关闭按钮。
 
 屏幕滤镜窗口（`ScreenFilterWindow`）同样有「自动折叠」标题栏按钮：鼠标离开窗口
-就收起为标题栏、移入标题栏展开；双击标题栏 / 空格键等手动折叠或展开会同时关闭
-自动折叠（手动操作优先）。图像区域左键单击或**按住拖动**会连续取「显示图像」在该
-处的像素颜色，通过 `colorPicked(r, g, b)` 信号交给调用方（主窗口据此更新当前颜色）；
-标题栏副标题短暂显示提示，文案由 `set_color_formatter()` 注入（主窗口传入当前颜色
-模型的 `format_srgb()`，如 `L-0.61 C-0.25 H-321.7`；未注入时退回 HEX）。窗口级轮询
-与「是否在拖拽 / 是否有模态弹窗」的判断在 `auto_collapse.py`，主窗口和屏幕滤镜窗口
-共用。
+超过约 1 秒才收起为标题栏（1 秒内返回不折叠）、移入标题栏立即展开；双击标题栏 /
+空格键等手动折叠或展开会同时关闭自动折叠（手动操作优先）。图像区域左键单击或
+**按住拖动**会连续取「显示图像」在该处的像素颜色，通过 `colorPicked(r, g, b)` 信号
+交给调用方（主窗口据此更新当前颜色）；标题栏副标题短暂显示提示，文案由
+`set_color_formatter()` 注入（主窗口传入当前颜色模型的 `format_srgb()`，如
+`L-0.61 C-0.25 H-321.7`；未注入时退回 HEX）。窗口级轮询、离开延迟与「是否在拖拽 /
+是否有模态弹窗」的判断在 `auto_collapse.py`，主窗口和屏幕滤镜窗口共用。
 
 主窗口标题栏最左侧显示应用图标（`init_frameless(..., icon=app_icon())`）：
 - 图标来自 `colorPickerPro/ui/app_icon.py`，实际文件是项目根的 `pixnex.ico`（由
@@ -168,7 +168,7 @@ class MyWindow(FramelessWindowMixin, QMainWindow):   # 或 QDialog / QWidget
 | `screenFilter.ScreenFilterWindow` | 信号 `colorPicked(r, g, b)`（图像区域单击/拖动连续取色）、`set_color_formatter(callable)`（提示文案）；自动折叠开关与 `toggle_collapse()` | `main.py` / 演示程序 |
 | `window_state.WindowStateStore` | `load()` / `save(WindowState)` / `persistent()`；`WindowState(auto_collapse, always_on_top, geometry)` | `main.py` |
 | `window_state.clamp_geometry` | 把恢复的窗口矩形夹进屏幕可用区域 | `main.py` / 测试 |
-| `auto_collapse` | `mouse_button_pressed()`、`modal_or_popup_open()`、`AUTO_COLLAPSE_POLL_MS`（自动折叠的公共轮询判断） | `main.py` / `screenFilter.py` |
+| `auto_collapse` | `mouse_button_pressed()`、`modal_or_popup_open()`、`CollapseDelay`（离开约 1 秒才折叠、回到窗口取消）、`AUTO_COLLAPSE_POLL_MS` / `AUTO_COLLAPSE_DELAY_MS` | `main.py` / `screenFilter.py` |
 | `color_picker_widgets` | `set_model()` / `remove_listener()`；`BaseColorModel.format_srgb(r, g, b)` 按当前模型格式化颜色文本 | `main.py` / 取色对话框 / 屏幕滤镜取色提示 |
 
 ## 7. 自带验证

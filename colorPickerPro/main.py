@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
 )
 
 from .auto_collapse import (
-    AUTO_COLLAPSE_POLL_MS, modal_or_popup_open, mouse_button_pressed,
+    AUTO_COLLAPSE_POLL_MS, CollapseDelay, modal_or_popup_open,
+    mouse_button_pressed,
 )
 from .color_picker_widgets import (
     ALL_MODELS,
@@ -101,6 +102,8 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         self._auto_collapse_timer = QTimer(self)
         self._auto_collapse_timer.setInterval(AUTO_COLLAPSE_POLL_MS)
         self._auto_collapse_timer.timeout.connect(self._on_auto_collapse_tick)
+        # 鼠标离开后等待约 1 秒才折叠；期间回到窗口则取消等待（展开不延迟）。
+        self._collapse_delay = CollapseDelay()
 
         self._model: BaseColorModel = OKLCHModel()
         self._model.set_from_srgb(1.0, 0.0, 0.0)
@@ -310,6 +313,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         """折叠为标题栏：只改高度，宽度与当前位置保留。"""
         if self._collapsed or self.isMinimized() or self.isMaximized():
             return
+        self._collapse_delay.reset()
         self._expanded_size = QSize(self.width(), self.height())
         self._expanded_min_height = self.minimumHeight()
         self._collapsed = True
@@ -322,6 +326,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
         """展开回折叠前的尺寸；窗口被拖到屏幕边缘时先夹回屏幕内。"""
         if not self._collapsed:
             return
+        self._collapse_delay.reset()
         self._collapsed = False
         self._body.show()
         self.setMaximumHeight(_QT_SIZE_UNLIMITED)
@@ -346,6 +351,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
     # ---- 自动折叠 -----------------------------------------------------
     def _on_auto_collapse_toggled(self, enabled: bool) -> None:
         self._auto_collapse_enabled = bool(enabled)
+        self._collapse_delay.reset()
         self._update_auto_collapse_timer()
         if not self._auto_collapse_enabled and self._collapsed:
             self._expand()   # 关掉开关立即展开，不能把窗口留在折叠状态
@@ -361,21 +367,30 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
     def _on_auto_collapse_tick(self) -> None:
         self._auto_collapse_step(QCursor.pos())
 
-    def _auto_collapse_step(self, cursor_pos: QPoint) -> None:
-        """按光标位置折叠 / 展开。参数显式传入，测试不需要移动真实鼠标。"""
+    def _auto_collapse_step(self, cursor_pos: QPoint,
+                            now: float | None = None) -> None:
+        """按光标位置折叠 / 展开：折叠有约 1 秒离开延迟，展开立即执行。
+
+        ``cursor_pos`` / ``now`` 显式传入便于测试（``now`` 为
+        ``time.monotonic()`` 秒数），真实运行时由定时器用当前光标与时间调用。
+        """
         if not self._auto_collapse_enabled or not self.isVisible():
+            self._collapse_delay.reset()
             return
         if self.isMinimized() or self.isMaximized():
+            self._collapse_delay.reset()
             return                      # 最小化 / 最大化时先不折叠，避免破坏窗口状态
-        if mouse_button_pressed():
-            return                      # 正在拖拽（取色 / 移动 / 缩放）
-        if modal_or_popup_open():
-            return                      # 模态对话框 / 弹出层打开时鼠标本来就在窗口外
+        if mouse_button_pressed() or modal_or_popup_open():
+            # 正在拖拽 / 有模态弹窗：鼠标在窗口外属正常，重新计时
+            self._collapse_delay.reset()
+            return
         inside = self.geometry().contains(cursor_pos)
         if self._collapsed:
+            self._collapse_delay.reset()
             if inside:
-                self._expand()
-        elif not inside:
+                self._expand()          # 展开不延迟
+            return
+        if self._collapse_delay.should_collapse(inside, now):
             self._collapse()
 
     def resizeEvent(self, event):  # noqa: N802 (Qt API)
@@ -446,6 +461,7 @@ class MainWindow(FramelessWindowMixin, QMainWindow):
 
     def hideEvent(self, event):  # noqa: N802 (Qt API)
         self._auto_collapse_timer.stop()
+        self._collapse_delay.reset()
         super().hideEvent(event)
 
     def _on_constrain(self):

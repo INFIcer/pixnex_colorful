@@ -58,26 +58,47 @@ def _temp_store() -> WindowStateStore:
 
 @contextmanager
 def _shown_window(store: WindowStateStore | None = None,
-                  stop_auto_timer: bool = True):
-    """Build a never-visible MainWindow (WA_DontShowOnScreen) and clean it up."""
-    app = _app()
-    from colorPickerPro.main import MainWindow
+                  stop_auto_timer: bool = True,
+                  stub_mouse_guard: bool = True):
+    """Build a never-visible MainWindow (WA_DontShowOnScreen) and clean it up.
 
-    win = MainWindow(store)
-    win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
-    win.show()
-    app.processEvents()
-    if stop_auto_timer:
-        # 测试里手动调用 _auto_collapse_step，避免真实光标/定时器引入抖动。
-        win._auto_collapse_timer.stop()
+    ``stub_mouse_guard`` 把物理鼠标按键判断替换为「未按下」：测试机上的真实
+    鼠标点击/自动化输入不应让自动折叠断言变成偶发失败。物理按键兜底逻辑由
+    ``test_mouse_button_pressed_falls_back_to_qt_state`` 单独验证。
+    """
+    app = _app()
+    from colorPickerPro import main as main_module
+
+    original_guard = main_module.mouse_button_pressed
+    if stub_mouse_guard:
+        main_module.mouse_button_pressed = lambda: False
+    win = None
     try:
+        win = main_module.MainWindow(store)
+        win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        win.show()
+        app.processEvents()
+        if stop_auto_timer:
+            # 测试里手动调用 _auto_collapse_step，避免真实光标/定时器引入抖动。
+            win._auto_collapse_timer.stop()
         yield win
     finally:
-        win._auto_collapse_timer.stop()
-        win._sync.stop_thread()
-        win.close()
-        win.deleteLater()
-        app.processEvents()
+        if win is not None:
+            win._auto_collapse_timer.stop()
+            win._sync.stop_thread()
+            win.close()
+            win.deleteLater()
+            app.processEvents()
+        main_module.mouse_button_pressed = original_guard
+
+
+_OUTSIDE = QPoint(-99999, -99999)
+
+
+def _fold_now(win) -> None:
+    """驱动自动折叠：先记录「离开窗口」，再跨过 1 秒延迟。"""
+    win._auto_collapse_step(_OUTSIDE, now=0.0)
+    win._auto_collapse_step(_OUTSIDE, now=2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +265,7 @@ def test_close_while_collapsed_saves_expanded_geometry():
         win.move(140, 160)
         win._auto_collapse_btn.setChecked(True)
         win._auto_collapse_timer.stop()
-        win._auto_collapse_step(QPoint(-99999, -99999))
+        _fold_now(win)
         assert win.is_collapsed()
         assert win.height() == SIZE.title_bar_height + 2
         # 退出时窗口仍处于折叠状态：保存的必须是展开后的尺寸。
@@ -262,8 +283,7 @@ def test_auto_collapse_folds_and_restores():
             QRect(150, 150, 400, 660), screen_available_rects(),
             QSize(win.minimumWidth(), win.minimumHeight()))
         assert not win.is_collapsed()
-        outside = QPoint(-99999, -99999)
-        win._auto_collapse_step(outside)
+        _fold_now(win)
         assert win.is_collapsed(), "鼠标离开后主窗口没有折叠"
         assert win.height() == SIZE.title_bar_height + 2, win.height()
         assert win._body.isHidden()
@@ -275,6 +295,32 @@ def test_auto_collapse_folds_and_restores():
         assert win.size() == expected.size(), (win.size(), expected)
         assert not win._auto_collapse_timer.isActive(), (
             "_shown_window 已停掉定时器，测试里不应重新启动")
+
+
+def test_auto_collapse_waits_one_second_before_folding():
+    store = _temp_store()
+    store.save(WindowState(auto_collapse=True, geometry=(150, 150, 400, 660)))
+    with _shown_window(store) as win:
+        inside = win.geometry().center()
+        win._auto_collapse_step(_OUTSIDE, now=100.0)
+        assert not win.is_collapsed(), "刚离开窗口不应立即折叠"
+        win._auto_collapse_step(_OUTSIDE, now=100.9)
+        assert not win.is_collapsed(), "离开不足 1 秒不应折叠"
+
+        # 1 秒内回到窗口：取消等待，不折叠
+        win._auto_collapse_step(inside, now=100.95)
+        assert not win.is_collapsed()
+
+        # 再次离开：重新从这一刻开始计时
+        win._auto_collapse_step(_OUTSIDE, now=101.0)
+        win._auto_collapse_step(_OUTSIDE, now=101.9)
+        assert not win.is_collapsed(), "重新离开后不足 1 秒不应折叠"
+        win._auto_collapse_step(_OUTSIDE, now=102.01)
+        assert win.is_collapsed(), "离开超过 1 秒应折叠"
+
+        # 展开不延迟：回到窗口立即展开
+        win._auto_collapse_step(win.geometry().center(), now=102.02)
+        assert not win.is_collapsed(), "展开应立即生效"
 
 
 def test_auto_collapse_disabled_never_folds():
@@ -290,7 +336,7 @@ def test_turning_auto_collapse_off_expands():
         expected = clamp_geometry(
             QRect(150, 150, 400, 660), screen_available_rects(),
             QSize(win.minimumWidth(), win.minimumHeight()))
-        win._auto_collapse_step(QPoint(-99999, -99999))
+        _fold_now(win)
         assert win.is_collapsed()
         win._auto_collapse_btn.setChecked(False)
         _app().processEvents()
@@ -329,11 +375,9 @@ def test_screen_picker_cancel_resets_mouse_button_state():
 
 def test_auto_collapse_survives_stale_qt_mouse_state():
     if sys.platform != "win32":
-        return  # 物理按键状态兜底只在 Windows 上生效
+        return
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QWidget
-
-    from colorPickerPro.auto_collapse import mouse_button_pressed
 
     store = _temp_store()
     store.save(WindowState(auto_collapse=True, geometry=(150, 150, 400, 660)))
@@ -353,9 +397,7 @@ def test_auto_collapse_survives_stale_qt_mouse_state():
             app.processEvents()
             assert QApplication.mouseButtons() != Qt.MouseButton.NoButton, (
                 "没能造出 Qt 按键状态残留，测试前提不成立")
-            assert mouse_button_pressed() is False, (
-                "物理按键已松开，不应再认为在拖拽")
-            win._auto_collapse_step(QPoint(-99999, -99999))
+            _fold_now(win)
             assert win.is_collapsed(), (
                 "Qt 按键状态残留导致自动折叠失效（屏幕取色后无法折叠）")
             win._auto_collapse_step(win.geometry().center())
@@ -366,6 +408,40 @@ def test_auto_collapse_survives_stale_qt_mouse_state():
         app.processEvents()
         QTest.mouseRelease(grabber, Qt.MouseButton.LeftButton,
                            pos=QPoint(50, 50))
+        grabber.close()
+        grabber.deleteLater()
+        app.processEvents()
+
+
+def test_mouse_button_pressed_falls_back_to_qt_state():
+    """非 Windows 分支（这里强制走回退）应读取 Qt 的按键状态。"""
+    import colorPickerPro.auto_collapse as auto_module
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QWidget
+
+    app = _app()
+    grabber = QWidget()
+    grabber.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    grabber.resize(80, 80)
+    grabber.show()
+    app.processEvents()
+    original_platform = auto_module.sys.platform
+    try:
+        QTest.mousePress(grabber, Qt.MouseButton.LeftButton,
+                         pos=QPoint(40, 40))
+        grabber.hide()
+        app.processEvents()
+        auto_module.sys.platform = "linux"   # 强制走 QApplication.mouseButtons()
+        try:
+            assert auto_module.mouse_button_pressed() is True, (
+                "Qt 按键状态残留时，回退分支应返回 True")
+        finally:
+            auto_module.sys.platform = original_platform
+    finally:
+        grabber.show()
+        app.processEvents()
+        QTest.mouseRelease(grabber, Qt.MouseButton.LeftButton,
+                           pos=QPoint(40, 40))
         grabber.close()
         grabber.deleteLater()
         app.processEvents()
@@ -449,6 +525,7 @@ def _main() -> int:
         test_close_saves_geometry_and_toggles,
         test_close_while_collapsed_saves_expanded_geometry,
         test_auto_collapse_folds_and_restores,
+        test_auto_collapse_waits_one_second_before_folding,
         test_auto_collapse_disabled_never_folds,
         test_turning_auto_collapse_off_expands,
         test_manual_toggle_collapse_keeps_position,
@@ -456,6 +533,7 @@ def _main() -> int:
         test_auto_collapse_button_is_in_title_bar,
         test_screen_picker_cancel_resets_mouse_button_state,
         test_auto_collapse_survives_stale_qt_mouse_state,
+        test_mouse_button_pressed_falls_back_to_qt_state,
         test_auto_collapse_ignores_maximized_window,
         test_topmost_on_non_windows_keeps_window_visible,
     ]

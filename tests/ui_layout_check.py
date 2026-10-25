@@ -907,17 +907,22 @@ def _run_functional_checks(fixtures: Fixtures,
             button.setChecked(True)
             QApplication.processEvents()
             win._auto_collapse_timer.stop()   # 手动驱动，避免真实光标干扰
-            win._auto_collapse_step(QPoint(-99999, -99999))
+            outside = QPoint(-99999, -99999)
+            win._auto_collapse_step(outside, now=0.0)
+            assert not win.is_collapsed(), (
+                "屏幕滤镜窗口：离开不足 1 秒就折叠了（应延迟折叠）")
+            win._auto_collapse_step(outside, now=1.2)
             QApplication.processEvents()
             harness.settle(win)
-            assert win.is_collapsed(), "鼠标离开后屏幕滤镜窗口没有折叠"
+            assert win.is_collapsed(), "鼠标离开超过 1 秒后屏幕滤镜窗口没有折叠"
             assert win.height() == SIZE.title_bar_height + 2, (
                 f"折叠后应只剩标题栏，实际高度 {win.height()}")
 
-            win._auto_collapse_step(win.geometry().center())
+            win._auto_collapse_step(win.geometry().center(), now=1.21)
             QApplication.processEvents()
             harness.settle(win)
-            assert not win.is_collapsed(), "鼠标进入标题栏后屏幕滤镜窗口没有展开"
+            assert not win.is_collapsed(), (
+                "鼠标进入标题栏后屏幕滤镜窗口没有立即展开")
 
             # 手动折叠（双击标题栏）必须同时关闭自动折叠。
             button.setChecked(True)
@@ -1232,18 +1237,22 @@ def _run_functional_checks(fixtures: Fixtures,
             button.setChecked(True)
             QApplication.processEvents()
             win._auto_collapse_timer.stop()   # 手动驱动，避免真实光标干扰
-            win._auto_collapse_step(QPoint(-99999, -99999))
+            outside = QPoint(-99999, -99999)
+            win._auto_collapse_step(outside, now=0.0)
+            assert not win.is_collapsed(), (
+                "主窗口：离开不足 1 秒就折叠了（应延迟折叠）")
+            win._auto_collapse_step(outside, now=1.2)
             QApplication.processEvents()
             harness.settle(win)
-            assert win.is_collapsed(), "鼠标离开后主窗口没有折叠"
+            assert win.is_collapsed(), "鼠标离开超过 1 秒后主窗口没有折叠"
             assert win.height() == SIZE.title_bar_height + 2, (
                 f"折叠后应只剩标题栏，实际高度 {win.height()}")
             assert win._body.isHidden(), "折叠后内容区应隐藏"
 
-            win._auto_collapse_step(win.geometry().center())
+            win._auto_collapse_step(win.geometry().center(), now=1.21)
             QApplication.processEvents()
             harness.settle(win)
-            assert not win.is_collapsed(), "鼠标进入标题栏后主窗口没有展开"
+            assert not win.is_collapsed(), "鼠标进入标题栏后主窗口没有立即展开"
             assert win._body.isVisible(), "展开后内容区应恢复显示"
 
             button.setChecked(False)
